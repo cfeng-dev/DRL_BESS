@@ -1,0 +1,31 @@
+# Ignore Jupyter notebook checkpoints
+.ipynb_checkpoints/
+*_checkpoint.*
+*checkpoint.md
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore virtual environments
+.venv/
+env/
+venv/
+
+# Ignore reinforcement learning logs and models
+logs/
+tensorboard/
+wandb/
+models/
+checkpoints/
+
+# Ignore data or temp files
+*.csv
+*.log
+*.tmp
+
+# Ignore system files
+.DS_Store
+Thumbs.db
