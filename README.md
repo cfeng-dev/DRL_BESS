@@ -63,3 +63,5 @@ The resulting framework aims to provide a robust and practical control strategy 
     - pypsa (0.25.1)
     - scikit-learn (1.7.1)
     - scipy (1.16.0)
+    - tensorboard (2.19.0)
+    - tqdm (4.67.1)
