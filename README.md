@@ -50,7 +50,7 @@ The resulting framework aims to provide a robust and practical control strategy 
 ## Tools
 
 - **IDE**: JupyterLab (4.4.7)
-- **Programming Language**: Python (3.13.9)
+- **Programming Language**: Python (3.11.14)
 - **Package Manager**: Conda (25.5.1)
 - **Libraries**:
     - pandas (2.3.3)
@@ -60,7 +60,7 @@ The resulting framework aims to provide a robust and practical control strategy 
     - stable-baselines3 (2.3.2)
     - pytorch (2.6.0)
     - pandapower (2.14.7)
-    - pypsa (0.25.1)
+    - protobuf (3.20.3)
     - scikit-learn (1.7.1)
     - scipy (1.16.0)
     - tensorboard (2.19.0)
