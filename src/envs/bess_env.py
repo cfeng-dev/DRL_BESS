@@ -258,34 +258,37 @@ class BatteryEnv(gym.Env):
         Compute cyclic time features:
         - time-of-day as sine/cosine
         - day-of-year as sine/cosine
-
+    
         If real timestamps are provided, they are used.
         Otherwise, a synthetic time index based on dt and episode length is used.
         """
+        # Clamp index to valid range [0, T-1] to avoid IndexError at terminal step
+        idx = max(0, min(t, self.T - 1))
+    
         if self.timestamps is not None:
-            ts = self.timestamps[t]
+            ts = self.timestamps[idx]
             # Convert pandas Timestamp to Python datetime if needed
             if hasattr(ts, "to_pydatetime"):
                 ts = ts.to_pydatetime()
-
+    
             day_of_year = ts.timetuple().tm_yday          # 1..365 (ignore leap year)
             seconds_in_day = ts.hour * 3600 + ts.minute * 60 + ts.second
-
+    
             phase_day = seconds_in_day / (24.0 * 3600.0)  # [0, 1)
             phase_year = (day_of_year - 1) / 365.0        # [0, 1)
         else:
             # Fallback: purely index-based cyclic encoding
             steps_per_day = max(1, int(round(24.0 / self.dt)))
             steps_per_year = max(1, int(round(365.0 * 24.0 / self.dt)))
-            phase_day = (t % steps_per_day) / steps_per_day
-            phase_year = (t % steps_per_year) / steps_per_year
-
+            phase_day = (idx % steps_per_day) / steps_per_day
+            phase_year = (idx % steps_per_year) / steps_per_year
+    
         sin_tod = math.sin(2.0 * math.pi * phase_day)
         cos_tod = math.cos(2.0 * math.pi * phase_day)
         sin_doy = math.sin(2.0 * math.pi * phase_year)
         cos_doy = math.cos(2.0 * math.pi * phase_year)
         return sin_tod, cos_tod, sin_doy, cos_doy
-
+    
     def _get_obs(self, price_obs: float, demand: float | None):
         # Time features from current step index
         sin_tod, cos_tod, sin_doy, cos_doy = self._get_time_features(self.t)
