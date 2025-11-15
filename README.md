@@ -65,6 +65,7 @@ The resulting framework aims to provide a robust and practical control strategy 
     - scipy (1.16.0)
     - tensorboard (2.19.0)
     - tqdm (4.67.1)
+    - rich (14.2.0)
 
 ## Required step
 
