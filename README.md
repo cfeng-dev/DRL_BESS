@@ -65,3 +65,13 @@ The resulting framework aims to provide a robust and practical control strategy 
     - scipy (1.16.0)
     - tensorboard (2.19.0)
     - tqdm (4.67.1)
+
+## Required step
+
+Run the following in the project root:
+
+```bash
+pip install -e .
+```
+
+Otherwise, imports from `src/` will not work.

@@ -3,6 +3,10 @@
 *_checkpoint.*
 *checkpoint.md
 
+# Ignore Python build/metadata files
+*.egg-info/
+src/*.egg-info/
+
 # Ignore Python cache files
 __pycache__/
 *.pyc
@@ -22,8 +26,6 @@ models/
 checkpoints/
 
 # Ignore data or temp files
-*.csv
-*.log
 *.tmp
 
 # Ignore system files
