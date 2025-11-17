@@ -55,6 +55,7 @@ class BatteryEnv(gym.Env):
         price_sigma_rel: float = 0.05,        # relative price uncertainty
         price_unit: str = "EUR_per_MWh",      # also supports "EUR_per_kWh"
         deg_cost_per_EFC: float = 100.0,      # cost per equivalent full cycle [Euro/EFC]
+        soh_deg_per_EFC: float = 0.01,        # SoH loss per EFC (e.g. 1% per cycle)
         use_simple_cycle_count: bool = True,
         penalty_soc_violation: float = 10.0,
         penalty_soh_violation: float = 100.0,
@@ -93,6 +94,7 @@ class BatteryEnv(gym.Env):
         self.price_sigma_rel = float(price_sigma_rel)
         self.price_unit = price_unit
         self.deg_cost_per_EFC = float(deg_cost_per_EFC)
+        self.soh_deg_per_EFC = float(soh_deg_per_EFC)
         self.use_simple_cycle_count = bool(use_simple_cycle_count)
         self.penalty_soc_violation = float(penalty_soc_violation)
         self.penalty_soh_violation = float(penalty_soh_violation)
@@ -178,6 +180,7 @@ class BatteryEnv(gym.Env):
         # Observed (noisy) price -> represents price forecast with uncertainty
         price_obs = self._noisy_price(price_true)
 
+        # SoC-Update
         # Energy flow in kWh (positive → charging, negative → discharging)
         energy_kWh = a * self.dt
         if a >= 0:
@@ -192,18 +195,25 @@ class BatteryEnv(gym.Env):
         # Apply SoC limits
         self.soc = float(np.clip(soc_pre, self.soc_min, self.soc_max))
 
-        # Simple cycle counting (Equivalent Full Cycles approximation)
-        if self.use_simple_cycle_count:
-            self._efc_acc += abs(self.soc - self._last_soc) / 2.0
-            self._last_soc = self.soc
-
         # Degradation cost in EUR
         deg_cost_eur = 0.0
         if self.use_simple_cycle_count:
-            efc_step = abs(delta_soc) / 2.0
+            # Actual SoC change after clipping
+            delta_soc_actual = abs(self.soc - self._last_soc)
+
+            # EFC share of this step
+            efc_step = delta_soc_actual / 2.0
+
+            # cumulative EFC
+            self._efc_acc += efc_step
+            self._last_soc = self.soc
+
+            # Degradation costs in EUR
             deg_cost_eur = efc_step * self.deg_cost_per_EFC
-            # Optional physical SoH degradation (disabled with factor 0.0)
-            self.soh = max(self.soh_min, self.soh - 0.0 * efc_step)
+
+            # SoH-Update
+            # physical SoH degradation only occurs with a true SoC change
+            self.soh = max(self.soh_min, self.soh - self.soh_deg_per_EFC * efc_step)
 
         # Revenue calculation (buy/sell energy at true price)
         if self.price_unit == "EUR_per_MWh":
