@@ -66,6 +66,7 @@ The resulting framework aims to provide a robust and practical control strategy 
     - tensorboard (2.19.0)
     - tqdm (4.67.1)
     - rich (14.2.0)
+    - ipywidgets (8.1.7)
 
 ## Required step
 
