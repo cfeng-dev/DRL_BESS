@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 
-def load_price_data(csv_path: str, resolution: str = "1H"):
+def load_price_data(csv_path: str, resolution: str = "15min"):
     """
     Load day-ahead electricity prices from Energy-Charts CSV and return:
         - price_series: numpy array (float32)
