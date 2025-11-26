@@ -48,8 +48,8 @@ class BatteryEnv(gym.Env):
         initial_soc: tuple = (0.40, 0.60),    # random initial SoC range at episode start
         price_sigma_rel: float = 0.05,        # price noise level (models forecast uncertainty)
         price_unit: str = "EUR_per_MWh",      # price unit for conversion (can also be "EUR_per_kWh")
-        deg_cost_per_EFC: float = 100.0,      # degradation cost per equivalent full cycle (in EUR)
-        soh_deg_per_EFC: float = 0.01,        # physical SoH loss per equivalent full cycle
+        deg_cost_per_EFC: float = 1.0,        # degradation cost per equivalent full cycle (in EUR)
+        soh_deg_per_EFC: float = 0.005,       # physical SoH loss per equivalent full cycle
         use_simple_cycle_count: bool = True,  # if True → simple EFC-based degradation model is applied
         penalty_soc_violation: float = 10.0,  # penalty if SoC goes outside limits (soft constraint)
         penalty_soh_violation: float = 100.0, # penalty if SoH drops below soh_min
