@@ -9,7 +9,8 @@ def plot_bess_rollout(
     price_list=None,
     action_list=None,
     timestamps=None,
-    figsize=(12, 15)
+    violated_list=None,   # NEW: optional list of bools
+    figsize=(12, 15),
 ):
     """
     Generic plotting function for BESS environment rollouts.
@@ -18,22 +19,18 @@ def plot_bess_rollout(
     ----------
     soc_list : List[float]
         State of Charge values over time.
-
     soh_list : List[float]
         State of Health values over time.
-
     reward_list : List[float]
         Reward values from the environment.
-
     price_list : Optional[List[float]]
         Electricity price series (raw EUR/MWh or normalized).
-
     action_list : Optional[List[float]]
         Charge/discharge actions in kW (continuous or discrete).
-
     timestamps : Optional[List[datetime]]
         Real-world timestamps for x-axis. If None → use step index.
-
+    violated_list : Optional[List[bool]]
+        True where the agent attempted an illegal SoC transition.
     figsize : tuple
         Figure size in inches (default = (12, 15)).
     """
@@ -62,14 +59,30 @@ def plot_bess_rollout(
     line = axs[row].axhline(0.9, color="red", linestyle="--", linewidth=1.5)
     axs[row].axhline(0.1, color="red", linestyle="--", linewidth=1.5)
     line.set_label("SoC bounds")
-
+    
     axs[row].plot(x, soc_list, label="SoC", color="blue")
-
+    
+    # --- Violation markers (optional) ---
+    if violated_list is not None:
+        # Make sure lengths match
+        n = min(len(soc_list), len(violated_list))
+        violated_indices = [i for i in range(n) if violated_list[i]]
+        violated_soc = [soc_list[i] for i in violated_indices]
+    
+        axs[row].scatter(
+            [x[i] for i in violated_indices],
+            violated_soc,
+            color="red",
+            s=40,
+            marker="x",
+            label="Violation",
+        )
+    
     axs[row].set_ylabel("SoC")
     axs[row].set_title("State of Charge")
     axs[row].grid(True)
     axs[row].set_yticks([0.0, 0.1, 0.5, 0.9, 1.0])
-
+    
     axs[row].legend(loc="upper right")
     row += 1
 
@@ -80,7 +93,6 @@ def plot_bess_rollout(
     axs[row].set_ylabel("SoH")
     axs[row].set_title("State of Health")
     axs[row].grid(True)
-
     axs[row].legend(loc="upper right")
     row += 1
 
@@ -91,7 +103,6 @@ def plot_bess_rollout(
     axs[row].set_ylabel("Reward")
     axs[row].set_title("Rewards")
     axs[row].grid(True)
-
     axs[row].legend(loc="upper right")
     row += 1
 
@@ -103,7 +114,6 @@ def plot_bess_rollout(
         axs[row].set_ylabel("Price [EUR/MWh]")
         axs[row].set_title("Electricity Price")
         axs[row].grid(True)
-
         axs[row].legend(loc="upper right")
         row += 1
 
@@ -115,7 +125,6 @@ def plot_bess_rollout(
         axs[row].set_ylabel("Action [kW]")
         axs[row].set_title("Charge/Discharge Command")
         axs[row].grid(True)
-
         axs[row].legend(loc="upper right")
         row += 1
 
