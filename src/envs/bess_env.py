@@ -55,10 +55,12 @@ class BatteryEnv(gym.Env):
         deg_cost_per_EFC: float = 0.1,        # degradation cost per equivalent full cycle (in EUR)
         soh_deg_per_EFC: float = 0.005,       # physical SoH loss per equivalent full cycle
         use_simple_cycle_count: bool = True,  # if True → simple EFC-based degradation model is applied
-        penalty_soc_violation: float = 5.0,   # penalty if SoC goes outside limits (soft constraint)
+        penalty_soc_violation: float = 1.0,   # penalty if SoC goes outside limits (soft constraint)
         penalty_soh_violation: float = 20.0,  # penalty if SoH drops below soh_min
         use_price_forecast: bool = False,     # if True → include a future price window in the observation
         forecast_horizon_hours: float = 24.0, # forecast horizon in hours (e.g. 24h)
+        episode_days: float = 7.0,            # logical episode length in days (e.g. 7 for one week)
+        random_start: bool = True,            # if True → start each episode at a random index in the time series
         random_seed: int | None = None,       # RNG seed for reproducibility
     ):
         super().__init__()
@@ -86,6 +88,12 @@ class BatteryEnv(gym.Env):
         self.capacity = float(capacity_kWh)
         self.p_max = float(p_max_kW)
         self.use_discrete = bool(use_discrete_actions)
+
+        # Logical episode configuration (week-based horizon)
+        self.episode_days = float(episode_days)
+        self.random_start = bool(random_start)
+        # Default number of steps per logical episode; may be adjusted in reset()
+        self.episode_len_steps = int(round(self.episode_days * 24.0 / self.dt))
 
         # Forecast configuration
         self.use_price_forecast = bool(use_price_forecast)
@@ -172,14 +180,30 @@ class BatteryEnv(gym.Env):
         if seed is not None:
             self.np_random, _ = gym.utils.seeding.np_random(seed)
 
-        self.t = 0
+        # Choose logical episode start index (e.g. random week in the time series)
+        # Adjust episode_len_steps if the time series is shorter than the desired episode length.
+        max_episode_len = int(round(self.episode_days * 24.0 / self.dt))
+        if self.T <= max_episode_len:
+            self.episode_len_steps = self.T
+            self.start_idx = 0
+        else:
+            self.episode_len_steps = max_episode_len
+            if self.random_start:
+                max_start = self.T - self.episode_len_steps
+                self.start_idx = int(self.np_random.integers(0, max_start + 1))
+            else:
+                self.start_idx = 0
+
+        self.t = self.start_idx
+        self.steps_in_episode = 0
+
         self.soc = float(self.np_random.uniform(self.initial_soc_range[0], self.initial_soc_range[1]))
         self.soh = 1.0
         self._efc_acc = 0.0
         self._last_soc = self.soc
         self.last_action = 0.0
 
-        price_true = float(self.price_series[0])
+        price_true = float(self.price_series[self.t])
         price_obs = self._noisy_price(price_true)
 
         obs = self._get_obs(price_obs, None)
@@ -285,9 +309,19 @@ class BatteryEnv(gym.Env):
         # ----------------------------------------
         self.last_action = a
         self.t += 1
+        self.steps_in_episode += 1
 
-        terminated = (self.t >= self.T) or (self.soh <= self.soh_min + 1e-12)
+        # Termination due to SoH limit; truncation due to time horizon / data end
+        terminated = (self.soh <= self.soh_min + 1e-12)
         truncated = False
+
+        # Truncate if logical episode horizon is reached
+        if self.steps_in_episode >= self.episode_len_steps:
+            truncated = True
+
+        # Truncate if we reach the end of the available time series
+        if self.t >= self.T:
+            truncated = True
 
         obs = self._get_obs(price_obs, demand)
         info = {
@@ -298,12 +332,10 @@ class BatteryEnv(gym.Env):
             "efc_cum": self._efc_acc,
             "energy_cmd_kWh": energy_cmd_kWh,
             "energy_eff_kWh": energy_eff_kWh,
-            "violated": violated, 
+            "violated": violated,
         }
 
         return obs, reward, terminated, truncated, info
-
-
 
     # ----------------------------------------------------
     # INTERNAL FUNCTIONS
@@ -352,7 +384,7 @@ class BatteryEnv(gym.Env):
         Construct normalized observation vector.
 
         If use_price_forecast=True, the observation is extended by
-        a window of future normalized prices (perfect foresight).
+        a window of future normalized prices (perfect knowledge of future prices).
         """
         sin_tod, cos_tod, sin_doy, cos_doy = self._get_time_features(self.t)
 
