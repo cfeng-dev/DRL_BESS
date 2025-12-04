@@ -7,8 +7,8 @@ class RuleBasedController:
 
     Improvements over the simple linear controller:
     - Uses robust percentile thresholds (p_low / p_high) instead of global min/max.
-    - Avoids charging when SoC is high (>= soc_max).
-    - Avoids discharging when SoC is low (<= soc_min).
+    - Avoids charging when SoC is high (>= soc_max_safe).
+    - Avoids discharging when SoC is low (<= soc_min_safe).
     - Adds a deadband zone to prevent unnecessary switching.
     - Performs a SoC lookahead using the environment's dynamics to avoid SoC violations.
     - Works for both discrete and continuous action spaces.
@@ -28,38 +28,49 @@ class RuleBasedController:
         q_low: float = 20.0,
         q_high: float = 80.0,
         deadband: float = 0.05,
+        eps: float = 0.00,
     ):
         """
         Parameters
         ----------
         env : BatteryEnv
             Environment instance.
-            
+
         use_observed_price : bool
             If True -> use noisy observed price from the observation.
-            
+
         soc_min : float
-            Controller-level minimum SoC threshold below which discharging is forbidden.
-            (Usually chosen slightly above env.soc_min as a safety margin.)
-            
+            Controller-level nominal minimum SoC threshold.
+            (Typically equal to env.soc_min.)
+
         soc_max : float
-            Controller-level maximum SoC threshold above which charging is forbidden.
-            (Usually chosen slightly below env.soc_max as a safety margin.)
-            
+            Controller-level nominal maximum SoC threshold.
+            (Typically equal to env.soc_max.)
+
         q_low : float
             Lower percentile (e.g. 20th) for defining "cheap" prices.
-            
+
         q_high : float
             Upper percentile (e.g. 80th) for defining "expensive" prices.
-            
+
         deadband : float
             If |factor| < deadband, the controller outputs zero power.
+
+        eps : float
+            Safety margin for SoC bounds. The controller will internally use
+            [soc_min + eps, soc_max - eps] to stay away from hard limits and
+            avoid numerical violations.
         """
         self.env = env
         self.use_observed_price = use_observed_price
         self.soc_min = soc_min
         self.soc_max = soc_max
         self.deadband = deadband
+        self.eps = eps
+
+        # Internal "safe" band used by the controller
+        self.soc_min_safe = self.soc_min + self.eps
+        self.soc_max_safe = self.soc_max - self.eps
 
         # Convert price series to array
         prices = np.asarray(env.price_series, dtype=float)
@@ -97,7 +108,7 @@ class RuleBasedController:
     def _would_violate_soc(self, soc: float, p_cmd: float) -> bool:
         """
         Predict whether applying p_cmd [kW] for one step would violate
-        the environment's SoC bounds (env.soc_min / env.soc_max).
+        (or come too close to) the environment's SoC bounds.
 
         Uses the same SoC update logic as the environment:
             - dt (hours)
@@ -108,8 +119,9 @@ class RuleBasedController:
         capacity = self.env.capacity
         eta_c = self.env.eta_c
         eta_d = self.env.eta_d
-        soc_min_env = self.env.soc_min
-        soc_max_env = self.env.soc_max
+
+        soc_min_env = self.env.soc_min + self.eps
+        soc_max_env = self.env.soc_max - self.eps
 
         # Energy in kWh for this step
         energy_kWh = p_cmd * dt  # positive: charging, negative: discharging
@@ -120,7 +132,7 @@ class RuleBasedController:
             delta_soc = (energy_kWh / eta_d) / capacity
 
         soc_pre = soc + delta_soc
-        return (soc_pre < soc_min_env) or (soc_pre > soc_max_env)
+        return (soc_pre <= soc_min_env) or (soc_pre >= soc_max_env)
 
     # ------------------------------------------------------------------ #
     def act(self, obs):
@@ -138,10 +150,10 @@ class RuleBasedController:
         # 1) Price-based factor
         factor = self._price_to_factor(price)
 
-        # 2) SoC safety override (controller-level band)
-        if soc >= self.soc_max and factor > 0.0:
+        # 2) SoC safety override (controller-level safe band)
+        if soc >= self.soc_max_safe and factor > 0.0:
             factor = 0.0
-        if soc <= self.soc_min and factor < 0.0:
+        if soc <= self.soc_min_safe and factor < 0.0:
             factor = 0.0
 
         # 3) Deadband (avoid small pointless actions)
