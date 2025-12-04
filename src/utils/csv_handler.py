@@ -2,39 +2,49 @@ import pandas as pd
 import numpy as np
 
 
-def load_price_data(csv_path: str, resolution: str = "15min"):
+def load_price_data(
+    csv_path: str,
+    resolution: str = "15min",
+    time_range: tuple[str, str] | None = None,
+):
     """
     Load day-ahead electricity prices from Energy-Charts CSV and return:
+        - df_resampled: the full (or sliced) resampled DataFrame
         - price_series: numpy array (float32)
-        - timestamps: pandas DateTimeIndex
+        - timestamps: pandas DatetimeIndex
 
     Parameters
     ----------
     csv_path : str
-        Path to the CSV file downloaded from Energy-Charts.
+        Path to the CSV file.
     resolution : str
-        Desired time resolution. Choose:
-            - "15min"  → high-resolution market data
-            - "1H"     → hourly data (recommended for RL env with dt_hours=1.0)
+        Desired time resolution:
+            - "15min" → high resolution
+            - "1h"    → hourly data
+    time_range : tuple(str, str) or None
+        Optional time slicing, e.g. ("2025-11-01", "2025-11-07")
+        If None → no slicing is applied and the full time span is used.
 
     Returns
     -------
+    df_resampled : pd.DataFrame
+        Resampled dataframe (possibly time-sliced)
     price_series : np.ndarray
-        Normalized or raw price data as float32 array.
+        Float32 numpy array of prices
     timestamps : pd.DatetimeIndex
-        Timestamps aligned with the price_series.
+        Timestamp index matching the price series
     """
 
     # --- Load CSV and parse datetime ---
     df = pd.read_csv(
         csv_path,
-        parse_dates=["Datum (MEZ)"]
+        parse_dates=["Datum (MEZ)"],    # adjust column name if needed
     )
 
-    # Set datetime as index
-    df = df.set_index("Datum (MEZ)")
+    # Set datetime index
+    df = df.set_index("Datum (MEZ)").sort_index()
 
-    # Detect price column name dynamically
+    # Dynamically detect the Day-Ahead price column
     price_col = None
     for col in df.columns:
         if "Day" in col and "Ahead" in col:
@@ -44,21 +54,23 @@ def load_price_data(csv_path: str, resolution: str = "15min"):
     if price_col is None:
         raise ValueError("Could not find 'Day Ahead' price column in CSV.")
 
-    # --- Resample to desired resolution ---
-    if resolution.lower() in ["1h", "1hour", "hour"]:
+    # --- Optional: time slicing BEFORE resampling ---
+    if time_range is not None:
+        start, end = time_range
+        df = df.loc[start:end]
+
+    # --- Resampling ---
+    res = resolution.lower()
+    if res in ["1h", "1hour", "hour"]:
         df_resampled = df.resample("1h").mean()
-    elif resolution.lower() in ["15min", "15m", "quarter"]:
+    elif res in ["15min", "15m", "quarter"]:
         df_resampled = df.resample("15min").mean()
     else:
         raise ValueError("resolution must be '1h' or '15min'")
 
-    # Extract price series
-    prices = df_resampled[price_col].astype(np.float32)
+    # Extract price series and drop NaNs
+    prices = df_resampled[price_col].dropna().astype(np.float32)
 
-    # Drop NaN rows (can appear after resampling)
-    prices = prices.dropna()
-
-    # Convert to numpy
     price_series = prices.values.astype(np.float32)
     timestamps = prices.index
 
