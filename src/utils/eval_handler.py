@@ -142,6 +142,7 @@ def evaluate_rollout(model, env, n_steps=None, deterministic=True):
 
         if terminated or truncated:
             print(f"Episode finished early at step {t}")
+            obs, _ = env.reset()
             break
 
     results = {

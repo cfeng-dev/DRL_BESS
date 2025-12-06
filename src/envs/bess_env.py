@@ -55,7 +55,7 @@ class BatteryEnv(gym.Env):
         deg_cost_per_EFC: float = 0.1,        # degradation cost per equivalent full cycle (in EUR)
         soh_deg_per_EFC: float = 0.005,       # physical SoH loss per equivalent full cycle
         use_simple_cycle_count: bool = True,  # if True → simple EFC-based degradation model is applied
-        penalty_soc_violation: float = 1.0,   # penalty if SoC goes outside limits (soft constraint)
+        penalty_soc_violation: float = 2.0,   # penalty if SoC goes outside limits (soft constraint)
         penalty_soh_violation: float = 20.0,  # penalty if SoH drops below soh_min
         use_price_forecast: bool = False,     # if True → include a future price window in the observation
         forecast_horizon_hours: float = 24.0, # forecast horizon in hours (e.g. 24h)
