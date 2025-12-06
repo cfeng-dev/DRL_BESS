@@ -50,7 +50,7 @@ def plot_bess_rollout(
     if action_list is not None:
         n_rows += 1
 
-    fig, axs = plt.subplots(n_rows, 1, figsize=figsize, sharex=True)
+    fig, axs = plt.subplots(n_rows, 1, figsize=figsize, sharex=False)
     row = 0
 
     # ----------------------------------------------------------------------
