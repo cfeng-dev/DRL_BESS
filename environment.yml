@@ -22,3 +22,4 @@ dependencies:
   - pip
   - pip:
       - torch==2.6.0
+      - sb3-contrib==2.7.1

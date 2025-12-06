@@ -58,6 +58,7 @@ The resulting framework aims to provide a robust and practical control strategy 
     - matplotlib (3.10.6)
     - gymnasium (0.28.1)
     - stable-baselines3 (2.3.2)
+    - sb3-contrib (2.7.1)
     - pytorch (2.6.0)
     - pandapower (2.14.7)
     - protobuf (3.20.3)
