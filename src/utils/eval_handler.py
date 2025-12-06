@@ -117,16 +117,19 @@ def evaluate_rollout(model, env, n_steps=None, deterministic=True):
         price_true_list.append(info["price_true"])
 
         # Robust handling of continuous vs discrete actions
-        if isinstance(action, np.ndarray):
-            if action.ndim == 0:
-                # 0D array: e.g. array(3) from DQN
-                action_scalar = float(action)
-            else:
-                # 1D array: e.g. [a] from SAC/TD3
-                action_scalar = float(action[0])
+        if "p_kw" in info:
+            action_scalar = float(info["p_kw"])
         else:
-            # Plain int/float
-            action_scalar = float(action)
+            # Fallback, falls p_kw nicht gesetzt ist
+            if isinstance(action, np.ndarray):
+                if action.ndim == 0:
+                    # 0D array: e.g. array(3) from DQN
+                    action_scalar = float(action)
+                else:
+                    # 1D array: e.g. [a] from SAC/TD3
+                    action_scalar = float(action[0])
+            else:
+                action_scalar = float(action)
 
         action_list.append(action_scalar)
 
