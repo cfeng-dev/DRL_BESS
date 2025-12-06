@@ -333,6 +333,7 @@ class BatteryEnv(gym.Env):
             "energy_cmd_kWh": energy_cmd_kWh,
             "energy_eff_kWh": energy_eff_kWh,
             "violated": violated,
+            "p_kw": a,
         }
 
         return obs, reward, terminated, truncated, info
