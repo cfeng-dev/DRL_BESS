@@ -22,6 +22,7 @@ class RuleBasedController:
     def __init__(
         self,
         env,
+        price_history=None, 
         use_observed_price: bool = True,
         soc_min: float = 0.10,
         soc_max: float = 0.90,
@@ -73,7 +74,12 @@ class RuleBasedController:
         self.soc_max_safe = self.soc_max - self.eps
 
         # Convert price series to array
-        prices = np.asarray(env.price_series, dtype=float)
+        if price_history is None:
+            print("[WARNING] RuleBasedController: No price_history provided. "
+                  "Using current environment prices. This may give unfair evaluation results.")
+            prices = np.asarray(env.price_series, dtype=float)
+        else:
+            prices = np.asarray(price_history, dtype=float)
 
         # Compute robust percentile thresholds
         self.p_low = float(np.percentile(prices, q_low))
