@@ -3,6 +3,8 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
+from scenarios.price_scenario import PriceScenarioGenerator
+
 
 class BatteryEnv(gym.Env):
     """
@@ -52,7 +54,7 @@ class BatteryEnv(gym.Env):
         initial_soc: tuple = (0.40, 0.60),    # random initial SoC range at episode start
         price_sigma_rel: float = 0.00,        # price noise level (models forecast uncertainty)
         price_unit: str = "EUR_per_MWh",      # price unit for conversion (can also be "EUR_per_kWh")
-        deg_cost_per_EFC: float = 0.1,        # degradation cost per equivalent full cycle (in EUR)
+        deg_cost_per_EFC: float = 0.2,        # degradation cost per equivalent full cycle (in EUR)
         soh_deg_per_EFC: float = 0.005,       # physical SoH loss per equivalent full cycle
         use_simple_cycle_count: bool = True,  # if True → simple EFC-based degradation model is applied
         penalty_soc_violation: float = 2.0,   # penalty if SoC goes outside limits (soft constraint)
@@ -62,6 +64,8 @@ class BatteryEnv(gym.Env):
         episode_days: float = 7.0,            # logical episode length in days (e.g. 7 for one week)
         random_start: bool = True,            # if True → start each episode at a random index in the time series
         random_seed: int | None = None,       # RNG seed for reproducibility
+        scenario_gen: PriceScenarioGenerator | None = None,  # optional: deterministic noisy forecast scenarios
+        scenario_id: int = 0,                                # scenario index for reproducible evaluation
     ):
         super().__init__()
 
@@ -133,6 +137,11 @@ class BatteryEnv(gym.Env):
         self._max_price = float(np.max(self.price_series))
         self._max_demand = None if self.demand_series is None else float(np.max(self.demand_series))
 
+        # Scenario generator for noisy price forecasts
+        self.scenario_gen = scenario_gen
+        self.scenario_id = int(scenario_id)
+        self._forecast_z = None
+
         # ----------------------------------------
         # Action space: continuous OR discrete
         # ----------------------------------------
@@ -203,8 +212,16 @@ class BatteryEnv(gym.Env):
         self._last_soc = self.soc
         self.last_action = 0.0
 
+        if self.use_price_forecast and self.forecast_horizon_steps > 0 and self.scenario_gen is not None:
+            self._forecast_z = self.scenario_gen.generate_episode_noise(
+                episode_len=self.episode_len_steps,
+                episode_id=self.scenario_id,
+            )
+        else:
+            self._forecast_z = None
+
         price_true = float(self.price_series[self.t])
-        price_obs = self._noisy_price(price_true)
+        price_obs = price_true
 
         obs = self._get_obs(price_obs, None)
         return obs, {}
@@ -230,7 +247,7 @@ class BatteryEnv(gym.Env):
         demand = None if self.demand_series is None else float(self.demand_series[self.t])
 
         # Observed price with Gaussian noise (forecast uncertainty)
-        price_obs = self._noisy_price(price_true)
+        price_obs = price_true
 
         # ----------------------------------------
         # 3. Battery SoC update with physical saturation
@@ -420,7 +437,19 @@ class BatteryEnv(gym.Env):
             for k in range(1, self.forecast_horizon_steps + 1):
                 idx = min(self.t + k, self.T - 1)  # clamp at final index
                 p_true_future = float(self.price_series[idx])
-                p_norm_future = p_true_future / (self._max_price + 1e-6)
+
+                if self._forecast_z is not None and self.scenario_gen is not None:
+                    step_in_ep = max(0, min(self.steps_in_episode, self.episode_len_steps - 1))
+                    z = float(self._forecast_z[step_in_ep, k - 1])
+
+                    sigma_rel = float(self.scenario_gen.sigma[k - 1])
+                    sigma_abs = sigma_rel * abs(p_true_future)
+
+                    p_used_future = p_true_future + z * sigma_abs
+                else:
+                    p_used_future = p_true_future
+
+                p_norm_future = p_used_future / (self._max_price + 1e-6)
                 prices_future.append(p_norm_future)
 
             obs_components.extend(prices_future)
