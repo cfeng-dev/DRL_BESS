@@ -53,10 +53,9 @@ class BatteryEnv(gym.Env):
         soh_min: float = 0.30,                # minimum allowed state of health before termination
         initial_soc: tuple = (0.40, 0.60),    # random initial SoC range at episode start
         price_unit: str = "EUR_per_MWh",      # price unit for conversion (can also be "EUR_per_kWh")
-        deg_cost_per_EFC: float = 0.2,        # degradation cost per equivalent full cycle (in EUR)
+        deg_cost_per_EFC: float = 0.1,        # degradation cost per equivalent full cycle (in EUR)
         soh_deg_per_EFC: float = 0.005,       # physical SoH loss per equivalent full cycle
-        use_simple_cycle_count: bool = True,  # if True → simple EFC-based degradation model is applied
-        penalty_soc_violation: float = 2.0,   # penalty if SoC goes outside limits (soft constraint)
+        penalty_soc_violation: float = 5.0,   # penalty if SoC goes outside limits (soft constraint)
         use_price_forecast: bool = False,     # if True → include a future price window in the observation
         forecast_horizon_hours: float = 24.0, # forecast horizon in hours (e.g. 24h)
         episode_days: float = 7.0,            # logical episode length in days (e.g. 7 for one week)
@@ -123,7 +122,6 @@ class BatteryEnv(gym.Env):
         self.price_unit = price_unit
         self.deg_cost_per_EFC = float(deg_cost_per_EFC)
         self.soh_deg_per_EFC = float(soh_deg_per_EFC)
-        self.use_simple_cycle_count = bool(use_simple_cycle_count)
         self.penalty_soc_violation = float(penalty_soc_violation)
 
         # RNG
@@ -284,17 +282,17 @@ class BatteryEnv(gym.Env):
         # 4. Battery degradation (simple EFC model)
         # ----------------------------------------
         deg_cost_eur = 0.0
-        if self.use_simple_cycle_count:
-            delta_soc_actual = abs(self.soc - self._last_soc)
-            efc_step = delta_soc_actual / 2.0
 
-            self._efc_acc += efc_step
-            self._last_soc = self.soc
+        delta_soc_actual = abs(self.soc - self._last_soc)
+        efc_step = delta_soc_actual / 2.0
 
-            deg_cost_eur = efc_step * self.deg_cost_per_EFC
+        self._efc_acc += efc_step
+        self._last_soc = self.soc
 
-            # SoH update (still used for termination)
-            self.soh = max(self.soh_min, self.soh - self.soh_deg_per_EFC * efc_step)
+        deg_cost_eur = efc_step * self.deg_cost_per_EFC
+
+        # SoH update (still used for termination)
+        self.soh = max(self.soh_min, self.soh - self.soh_deg_per_EFC * efc_step)
 
         # ----------------------------------------
         # 5. Revenue from charging/discharging (based on effective energy)
