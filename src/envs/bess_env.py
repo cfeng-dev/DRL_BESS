@@ -52,13 +52,11 @@ class BatteryEnv(gym.Env):
         soc_max: float = 0.90,                # maximum allowed state of charge (fraction)
         soh_min: float = 0.30,                # minimum allowed state of health before termination
         initial_soc: tuple = (0.40, 0.60),    # random initial SoC range at episode start
-        price_sigma_rel: float = 0.00,        # price noise level (models forecast uncertainty)
         price_unit: str = "EUR_per_MWh",      # price unit for conversion (can also be "EUR_per_kWh")
         deg_cost_per_EFC: float = 0.2,        # degradation cost per equivalent full cycle (in EUR)
         soh_deg_per_EFC: float = 0.005,       # physical SoH loss per equivalent full cycle
         use_simple_cycle_count: bool = True,  # if True → simple EFC-based degradation model is applied
         penalty_soc_violation: float = 2.0,   # penalty if SoC goes outside limits (soft constraint)
-        penalty_soh_violation: float = 20.0,  # penalty if SoH drops below soh_min
         use_price_forecast: bool = False,     # if True → include a future price window in the observation
         forecast_horizon_hours: float = 24.0, # forecast horizon in hours (e.g. 24h)
         episode_days: float = 7.0,            # logical episode length in days (e.g. 7 for one week)
@@ -122,13 +120,11 @@ class BatteryEnv(gym.Env):
         self.soc_max = float(soc_max)
         self.soh_min = float(soh_min)
         self.initial_soc_range = (float(initial_soc[0]), float(initial_soc[1]))
-        self.price_sigma_rel = float(price_sigma_rel)
         self.price_unit = price_unit
         self.deg_cost_per_EFC = float(deg_cost_per_EFC)
         self.soh_deg_per_EFC = float(soh_deg_per_EFC)
         self.use_simple_cycle_count = bool(use_simple_cycle_count)
         self.penalty_soc_violation = float(penalty_soc_violation)
-        self.penalty_soh_violation = float(penalty_soh_violation)
 
         # RNG
         self.np_random, _ = gym.utils.seeding.np_random(random_seed)
@@ -246,7 +242,7 @@ class BatteryEnv(gym.Env):
         price_true = float(self.price_series[self.t])
         demand = None if self.demand_series is None else float(self.demand_series[self.t])
 
-        # Observed price with Gaussian noise (forecast uncertainty)
+        # Observed price (no additional Gaussian noise here; scenarios handled via PriceScenarioGenerator in forecast)
         price_obs = price_true
 
         # ----------------------------------------
@@ -297,7 +293,7 @@ class BatteryEnv(gym.Env):
 
             deg_cost_eur = efc_step * self.deg_cost_per_EFC
 
-            # SoH update
+            # SoH update (still used for termination)
             self.soh = max(self.soh_min, self.soh - self.soh_deg_per_EFC * efc_step)
 
         # ----------------------------------------
@@ -316,8 +312,6 @@ class BatteryEnv(gym.Env):
         penalty = 0.0
         if violated:
             penalty -= self.penalty_soc_violation
-        if self.soh <= self.soh_min + 1e-12:
-            penalty -= self.penalty_soh_violation
 
         reward = float(revenue_eur - deg_cost_eur + penalty)
 
@@ -358,14 +352,6 @@ class BatteryEnv(gym.Env):
     # ----------------------------------------------------
     # INTERNAL FUNCTIONS
     # ----------------------------------------------------
-    def _noisy_price(self, price_true: float) -> float:
-        """
-        Add Gaussian noise to model price forecast uncertainty
-        (used for the observed price in the state).
-        """
-        sigma = self.price_sigma_rel * abs(price_true)
-        return float(self.np_random.normal(price_true, sigma))
-
     def _get_time_features(self, t: int):
         """
         Compute cyclic time features (sin/cos of time-of-day & day-of-year).
@@ -431,7 +417,7 @@ class BatteryEnv(gym.Env):
             last_action_norm,
         ]
 
-        # Optional: append future price window (perfect knowledge of future prices)
+        # Optional: append future price window (scenario-based noisy forecasts)
         if self.use_price_forecast and self.forecast_horizon_steps > 0:
             prices_future = []
             for k in range(1, self.forecast_horizon_steps + 1):
