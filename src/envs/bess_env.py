@@ -49,21 +49,21 @@ class BatteryEnv(gym.Env):
         eta_c: float = 0.95,                  # charging efficiency (0–1)
         eta_d: float = 0.95,                  # discharging efficiency (0–1)
 
-        # --- NEW: Hard physical SoC limits (state always clipped to this range) ---
-        soc_hard_min: float = 0.0,            # hard minimum SoC (fraction)
-        soc_hard_max: float = 1.0,            # hard maximum SoC (fraction)
+        # Hard physical SoC limits (state always clipped to this range) ---
+        soc_hard_min: float = 0.1,            # hard minimum SoC (fraction)
+        soc_hard_max: float = 0.9,            # hard maximum SoC (fraction)
 
-        # --- NEW: Soft comfort band (agent may go outside, but gets increasing penalty) ---
-        soc_soft_min: float = 0.10,           # soft minimum SoC (fraction)
-        soc_soft_max: float = 0.90,           # soft maximum SoC (fraction)
+        # Soft comfort band (agent may go outside, but gets increasing penalty) ---
+        soc_soft_min: float = 0.1,            # soft minimum SoC (fraction)
+        soc_soft_max: float = 0.9,            # soft maximum SoC (fraction)
 
-        soh_min: float = 0.30,                # minimum allowed state of health before termination
+        soh_min: float = 0.3,                 # minimum allowed state of health before termination
         initial_soc: tuple = (0.40, 0.60),    # random initial SoC range at episode start
         price_unit: str = "EUR_per_MWh",      # price unit for conversion (can also be "EUR_per_kWh")
         deg_cost_per_EFC: float = 0.1,        # degradation cost per equivalent full cycle (in EUR)
         soh_deg_per_EFC: float = 0.005,       # physical SoH loss per equivalent full cycle
 
-        # --- NEW: Soft SoC penalty shape (increases the further SoC leaves [soc_soft_min, soc_soft_max]) ---
+        # Soft SoC penalty shape (increases the further SoC leaves [soc_soft_min, soc_soft_max]) ---
         penalty_soc_soft_k: float = 5.0,      # strength
         penalty_soc_soft_power: float = 2.0,  # 2=quadratic, 3=cubic, ...
 
