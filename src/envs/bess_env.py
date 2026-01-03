@@ -48,14 +48,25 @@ class BatteryEnv(gym.Env):
         discrete_action_values=None,          # normalized discrete actions in [-1, 1], if None → uses 21 evenly spaced values between -1 and +1
         eta_c: float = 0.95,                  # charging efficiency (0–1)
         eta_d: float = 0.95,                  # discharging efficiency (0–1)
-        soc_min: float = 0.10,                # minimum allowed state of charge (fraction)
-        soc_max: float = 0.90,                # maximum allowed state of charge (fraction)
+
+        # --- NEW: Hard physical SoC limits (state always clipped to this range) ---
+        soc_hard_min: float = 0.0,            # hard minimum SoC (fraction)
+        soc_hard_max: float = 1.0,            # hard maximum SoC (fraction)
+
+        # --- NEW: Soft comfort band (agent may go outside, but gets increasing penalty) ---
+        soc_soft_min: float = 0.10,           # soft minimum SoC (fraction)
+        soc_soft_max: float = 0.90,           # soft maximum SoC (fraction)
+
         soh_min: float = 0.30,                # minimum allowed state of health before termination
         initial_soc: tuple = (0.40, 0.60),    # random initial SoC range at episode start
         price_unit: str = "EUR_per_MWh",      # price unit for conversion (can also be "EUR_per_kWh")
         deg_cost_per_EFC: float = 0.1,        # degradation cost per equivalent full cycle (in EUR)
         soh_deg_per_EFC: float = 0.005,       # physical SoH loss per equivalent full cycle
-        penalty_soc_violation: float = 5.0,   # penalty if SoC goes outside limits (soft constraint)
+
+        # --- NEW: Soft SoC penalty shape (increases the further SoC leaves [soc_soft_min, soc_soft_max]) ---
+        penalty_soc_soft_k: float = 5.0,      # strength
+        penalty_soc_soft_power: float = 2.0,  # 2=quadratic, 3=cubic, ...
+
         use_price_forecast: bool = False,     # if True → include a future price window in the observation
         forecast_horizon_hours: float = 24.0, # forecast horizon in hours (e.g. 24h)
         episode_days: float = 7.0,            # logical episode length in days (e.g. 7 for one week)
@@ -115,14 +126,26 @@ class BatteryEnv(gym.Env):
 
         self.eta_c = float(eta_c)
         self.eta_d = float(eta_d)
-        self.soc_min = float(soc_min)
-        self.soc_max = float(soc_max)
+
+        # --- NEW: hard + soft SoC constraints ---
+        self.soc_hard_min = float(soc_hard_min)
+        self.soc_hard_max = float(soc_hard_max)
+        self.soc_soft_min = float(soc_soft_min)
+        self.soc_soft_max = float(soc_soft_max)
+
+        if not (0.0 <= self.soc_hard_min < self.soc_hard_max <= 1.0):
+            raise ValueError("Hard SoC bounds must satisfy 0 <= soc_hard_min < soc_hard_max <= 1.")
+        if not (self.soc_hard_min <= self.soc_soft_min < self.soc_soft_max <= self.soc_hard_max):
+            raise ValueError("Soft SoC bounds must lie within hard bounds and satisfy soc_soft_min < soc_soft_max.")
+
         self.soh_min = float(soh_min)
         self.initial_soc_range = (float(initial_soc[0]), float(initial_soc[1]))
         self.price_unit = price_unit
         self.deg_cost_per_EFC = float(deg_cost_per_EFC)
         self.soh_deg_per_EFC = float(soh_deg_per_EFC)
-        self.penalty_soc_violation = float(penalty_soc_violation)
+
+        self.penalty_soc_soft_k = float(penalty_soc_soft_k)
+        self.penalty_soc_soft_power = float(penalty_soc_soft_power)
 
         # RNG
         self.np_random, _ = gym.utils.seeding.np_random(random_seed)
@@ -201,6 +224,8 @@ class BatteryEnv(gym.Env):
         self.steps_in_episode = 0
 
         self.soc = float(self.np_random.uniform(self.initial_soc_range[0], self.initial_soc_range[1]))
+        self.soc = float(np.clip(self.soc, self.soc_hard_min, self.soc_hard_max))
+
         self.soh = 1.0
         self._efc_acc = 0.0
         self._last_soc = self.soc
@@ -244,29 +269,28 @@ class BatteryEnv(gym.Env):
         price_obs = price_true
 
         # ----------------------------------------
-        # 3. Battery SoC update with physical saturation
+        # 3. Battery SoC update with hard saturation [0,1]
         # ----------------------------------------
         # Commanded energy in kWh (positive: charging, negative: discharging)
         energy_cmd_kWh = a * self.dt
 
-        # --- 3a) Check if the *command* would violate SoC bounds (for penalty) ---
+        # Commanded SoC delta (for "intent")
         if energy_cmd_kWh >= 0.0:
             delta_soc_cmd = (energy_cmd_kWh * self.eta_c) / self.capacity
         else:
             delta_soc_cmd = (energy_cmd_kWh / self.eta_d) / self.capacity
 
-        soc_pre_cmd = self.soc + delta_soc_cmd
-        violated = (soc_pre_cmd < self.soc_min) or (soc_pre_cmd > self.soc_max)
+        soc_pre_cmd = self.soc + delta_soc_cmd  # what the agent "wanted"
 
-        # --- 3b) Apply physical saturation for the actually executed energy ---
+        # --- Apply physical saturation for the actually executed energy wrt HARD bounds ---
         if energy_cmd_kWh >= 0.0:
-            # Charging: cannot exceed soc_max
-            soc_headroom = self.soc_max - self.soc
+            # Charging: cannot exceed soc_hard_max
+            soc_headroom = self.soc_hard_max - self.soc
             energy_max_kWh = (soc_headroom * self.capacity) / max(self.eta_c, 1e-6)
             energy_eff_kWh = float(np.clip(energy_cmd_kWh, 0.0, energy_max_kWh))
         else:
-            # Discharging: cannot go below soc_min
-            soc_above_min = self.soc - self.soc_min
+            # Discharging: cannot go below soc_hard_min
+            soc_above_min = self.soc - self.soc_hard_min
             energy_min_kWh = - (soc_above_min * self.capacity * self.eta_d)
             energy_eff_kWh = float(np.clip(energy_cmd_kWh, energy_min_kWh, 0.0))
 
@@ -276,7 +300,19 @@ class BatteryEnv(gym.Env):
         else:
             delta_soc = (energy_eff_kWh / self.eta_d) / self.capacity
 
-        self.soc = float(np.clip(self.soc + delta_soc, self.soc_min, self.soc_max))
+        self.soc = float(np.clip(self.soc + delta_soc, self.soc_hard_min, self.soc_hard_max))
+
+        # --- NEW: Increasing soft penalty outside comfort band [soc_soft_min, soc_soft_max] ---
+        below = max(0.0, self.soc_soft_min - self.soc)
+        above = max(0.0, self.soc - self.soc_soft_max)
+        soft_violation = below + above
+
+        penalty_soc_soft = -self.penalty_soc_soft_k * (
+            (below ** self.penalty_soc_soft_power) + (above ** self.penalty_soc_soft_power)
+        )
+
+        # Optional: you can track whether the agent *commanded* going outside the comfort band
+        violated_soft_cmd = (soc_pre_cmd < self.soc_soft_min) or (soc_pre_cmd > self.soc_soft_max)
 
         # ----------------------------------------
         # 4. Battery degradation (simple EFC model)
@@ -308,8 +344,7 @@ class BatteryEnv(gym.Env):
         # 6. Penalties
         # ----------------------------------------
         penalty = 0.0
-        if violated:
-            penalty -= self.penalty_soc_violation
+        penalty += penalty_soc_soft
 
         reward = float(revenue_eur - deg_cost_eur + penalty)
 
@@ -338,11 +373,15 @@ class BatteryEnv(gym.Env):
             "revenue_eur": revenue_eur,
             "deg_cost_eur": deg_cost_eur,
             "penalty_eur": penalty,
+            "penalty_soc_soft": float(penalty_soc_soft),
+            "soft_violation": float(soft_violation),
+            "violated_soft_cmd": bool(violated_soft_cmd),
             "efc_cum": self._efc_acc,
             "energy_cmd_kWh": energy_cmd_kWh,
             "energy_eff_kWh": energy_eff_kWh,
-            "violated": violated,
             "p_kw": a,
+            "soc": float(self.soc),
+            "soh": float(self.soh),
         }
 
         return obs, reward, terminated, truncated, info
