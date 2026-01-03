@@ -87,26 +87,6 @@ def plot_bess_rollout(
     row += 1
 
     # ----------------------------------------------------------------------
-    # SoH plot
-    # ----------------------------------------------------------------------
-    axs[row].plot(x, soh_list, label="SoH", color="orange")
-    axs[row].set_ylabel("SoH")
-    axs[row].set_title("State of Health")
-    axs[row].grid(True)
-    axs[row].legend(loc="upper right")
-    row += 1
-
-    # ----------------------------------------------------------------------
-    # Reward plot
-    # ----------------------------------------------------------------------
-    axs[row].plot(x, reward_list, label="Reward", color="green")
-    axs[row].set_ylabel("Reward")
-    axs[row].set_title("Rewards")
-    axs[row].grid(True)
-    axs[row].legend(loc="upper right")
-    row += 1
-
-    # ----------------------------------------------------------------------
     # Price plot (optional)
     # ----------------------------------------------------------------------
     if price_list is not None:
@@ -127,6 +107,26 @@ def plot_bess_rollout(
         axs[row].grid(True)
         axs[row].legend(loc="upper right")
         row += 1
+
+    # ----------------------------------------------------------------------
+    # SoH plot
+    # ----------------------------------------------------------------------
+    axs[row].plot(x, soh_list, label="SoH", color="orange")
+    axs[row].set_ylabel("SoH")
+    axs[row].set_title("State of Health")
+    axs[row].grid(True)
+    axs[row].legend(loc="upper right")
+    row += 1
+
+    # ----------------------------------------------------------------------
+    # Reward plot
+    # ----------------------------------------------------------------------
+    axs[row].plot(x, reward_list, label="Reward", color="green")
+    axs[row].set_ylabel("Reward")
+    axs[row].set_title("Rewards")
+    axs[row].grid(True)
+    axs[row].legend(loc="upper right")
+    row += 1
 
     # Final x-axis label
     axs[row - 1].set_xlabel(xlabel)

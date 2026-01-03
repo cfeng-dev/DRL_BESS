@@ -42,7 +42,7 @@ def evaluate_financials(revenue_list, deg_cost_list, penalty_list, verbose=True)
         print(f"Total revenue    (EUR): {total_revenue:.3f}")
         print(f"Degradation cost (EUR): {total_degradation:.3f}")
         print(f"Penalty cost     (EUR): {total_penalties:.3f}")
-        print(f"Net profit       (EUR): {total_profit:.3f}")
+        print(f"Total reward     (EUR): {total_profit:.3f}")
         print("=========================")
 
     return results
