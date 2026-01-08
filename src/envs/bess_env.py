@@ -74,6 +74,7 @@ class BatteryEnv(gym.Env):
         random_seed: int | None = None,       # RNG seed for reproducibility
         scenario_gen: PriceScenarioGenerator | None = None,  # optional: deterministic noisy forecast scenarios
         scenario_id: int = 0,                                # scenario index for reproducible evaluation
+        vary_scenario_per_episode: bool = True,              # True (training): change episode_id each reset
     ):
         super().__init__()
 
@@ -127,7 +128,7 @@ class BatteryEnv(gym.Env):
         self.eta_c = float(eta_c)
         self.eta_d = float(eta_d)
 
-        # --- NEW: hard + soft SoC constraints ---
+        # --- hard + soft SoC constraints ---
         self.soc_hard_min = float(soc_hard_min)
         self.soc_hard_max = float(soc_hard_max)
         self.soc_soft_min = float(soc_soft_min)
@@ -157,7 +158,16 @@ class BatteryEnv(gym.Env):
         # Scenario generator for noisy price forecasts
         self.scenario_gen = scenario_gen
         self.scenario_id = int(scenario_id)
+        self.vary_scenario_per_episode = bool(vary_scenario_per_episode)
         self._forecast_z = None
+        self._episode_counter = 0  # used to vary scenario noise across resets (training)
+
+        # Safety: if using forecast + scenario_gen, dimensions must match
+        if self.use_price_forecast and self.forecast_horizon_steps > 0 and self.scenario_gen is not None:
+            if int(self.scenario_gen.H) != int(self.forecast_horizon_steps):
+                raise ValueError(
+                    f"scenario_gen.H ({self.scenario_gen.H}) must equal forecast_horizon_steps ({self.forecast_horizon_steps})."
+                )
 
         # ----------------------------------------
         # Action space: continuous OR discrete
@@ -206,6 +216,8 @@ class BatteryEnv(gym.Env):
         if seed is not None:
             self.np_random, _ = gym.utils.seeding.np_random(seed)
 
+        options = {} if options is None else dict(options)
+
         # Choose logical episode start index (e.g. random week in the time series)
         # Adjust episode_len_steps if the time series is shorter than the desired episode length.
         max_episode_len = int(round(self.episode_days * 24.0 / self.dt))
@@ -231,13 +243,29 @@ class BatteryEnv(gym.Env):
         self._last_soc = self.soc
         self.last_action = 0.0
 
+        # Allow overriding episode_id explicitly (useful for evaluation scripts)
+        forced_episode_id = options.get("episode_id", None)
+
         if self.use_price_forecast and self.forecast_horizon_steps > 0 and self.scenario_gen is not None:
+            if forced_episode_id is not None:
+                episode_id = int(forced_episode_id)
+            else:
+                # training default: vary noise pattern across resets
+                if self.vary_scenario_per_episode:
+                    episode_id = self.scenario_id + self._episode_counter
+                else:
+                    # evaluation default: fixed scenario pattern
+                    episode_id = self.scenario_id
+
             self._forecast_z = self.scenario_gen.generate_episode_noise(
                 episode_len=self.episode_len_steps,
-                episode_id=self.scenario_id,
+                episode_id=episode_id,
             )
         else:
             self._forecast_z = None
+
+        # increment counter AFTER using it
+        self._episode_counter += 1
 
         price_true = float(self.price_series[self.t])
         price_obs = price_true
@@ -302,7 +330,7 @@ class BatteryEnv(gym.Env):
 
         self.soc = float(np.clip(self.soc + delta_soc, self.soc_hard_min, self.soc_hard_max))
 
-        # --- NEW: Increasing soft penalty outside comfort band [soc_soft_min, soc_soft_max] ---
+        # --- Increasing soft penalty outside comfort band [soc_soft_min, soc_soft_max] ---
         below = max(0.0, self.soc_soft_min - self.soc)
         above = max(0.0, self.soc - self.soc_soft_max)
         soft_violation = below + above
@@ -317,8 +345,6 @@ class BatteryEnv(gym.Env):
         # ----------------------------------------
         # 4. Battery degradation (simple EFC model)
         # ----------------------------------------
-        deg_cost_eur = 0.0
-
         delta_soc_actual = abs(self.soc - self._last_soc)
         efc_step = delta_soc_actual / 2.0
 
@@ -463,12 +489,12 @@ class BatteryEnv(gym.Env):
 
                 if self._forecast_z is not None and self.scenario_gen is not None:
                     step_in_ep = max(0, min(self.steps_in_episode, self.episode_len_steps - 1))
-                    z = float(self._forecast_z[step_in_ep, k - 1])
+                    eps = float(self._forecast_z[step_in_ep, k - 1])  # eps ~ N(0,1)
 
-                    sigma_rel = float(self.scenario_gen.sigma[k - 1])
-                    sigma_abs = sigma_rel * abs(p_true_future)
+                    sigma_rel = float(self.scenario_gen.sigma[k - 1])  # relative std at horizon k
+                    sigma_abs = sigma_rel * abs(p_true_future)         # absolute std in price units
 
-                    p_used_future = p_true_future + z * sigma_abs
+                    p_used_future = p_true_future + eps * sigma_abs
                 else:
                     p_used_future = p_true_future
 

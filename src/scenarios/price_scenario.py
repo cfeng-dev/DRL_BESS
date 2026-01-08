@@ -36,16 +36,20 @@ class PriceScenarioGenerator:
         else:
             raise ValueError(f"Unknown sigma schedule: {schedule}")
 
+        # Safety: avoid negative sigma due to mis-config
+        self.sigma = np.maximum(self.sigma, 0.0).astype(np.float32)
+        
     def generate_episode_noise(self, episode_len: int, episode_id: int) -> np.ndarray:
         """
-        Returns noise with shape (episode_len, horizon_steps)
+        Returns standard normal eps with shape (episode_len, horizon_steps)
+        Horizon-dependent sigma is applied in the environment
         """
         rng = np.random.default_rng(self.base_seed + episode_id)
 
-        noise = rng.normal(
+        eps = rng.normal(
             loc=0.0,
-            scale=self.sigma[None, :],
+            scale=1.0,
             size=(episode_len, self.H),
         ).astype(np.float32)
 
-        return noise
+        return eps
