@@ -3,7 +3,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from scenarios.price_scenario import PriceScenarioGenerator
+from utils.forecast_scenario import ForecastScenarioGenerator
 
 
 class BatteryEnv(gym.Env):
@@ -72,7 +72,7 @@ class BatteryEnv(gym.Env):
         episode_days: float = 7.0,            # logical episode length in days (e.g. 7 for one week)
         random_start: bool = True,            # if True → start each episode at a random index in the time series
         random_seed: int | None = None,       # RNG seed for reproducibility
-        scenario_gen: PriceScenarioGenerator | None = None,  # optional: deterministic noisy forecast scenarios
+        scenario_gen: ForecastScenarioGenerator | None = None,  # optional: deterministic noisy forecast scenarios
         scenario_id: int = 0,                                # scenario index for reproducible evaluation
         vary_scenario_per_episode: bool = True,              # True (training): change episode_id each reset
     ):
