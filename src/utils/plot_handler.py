@@ -1,16 +1,17 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-
 def plot_bess_rollout(
     soc_list,
-    soh_list,
-    reward_list,
+    soh_list=None,
+    reward_list=None,
     price_list=None,
+    demand_list=None,
     action_list=None,
     timestamps=None,
-    violated_list=None,   # NEW: optional list of bools
-    figsize=(12, 15),
+    violated_list=None,
+    figsize=(14, 24),
+    fontsize_base=14, # Global font size control
 ):
     """
     Generic plotting function for BESS environment rollouts.
@@ -19,12 +20,14 @@ def plot_bess_rollout(
     ----------
     soc_list : List[float]
         State of Charge values over time.
-    soh_list : List[float]
+    soh_list : Optional[List[float]]
         State of Health values over time.
-    reward_list : List[float]
+    reward_list : Optional[List[float]]
         Reward values from the environment.
     price_list : Optional[List[float]]
         Electricity price series (raw EUR/MWh or normalized).
+    demand_list : Optional[List[float]]
+        Electricity demand series (e.g. MW or MWh).
     action_list : Optional[List[float]]
         Charge/discharge actions in kW (continuous or discrete).
     timestamps : Optional[List[datetime]]
@@ -32,10 +35,14 @@ def plot_bess_rollout(
     violated_list : Optional[List[bool]]
         True where the agent attempted an illegal SoC transition.
     figsize : tuple
-        Figure size in inches (default = (12, 15)).
+        Figure size in inches.
+    fontsize_base : int
+        Base font size for all labels and titles.
     """
 
+    # -----------------------------
     # Determine x-axis
+    # -----------------------------
     if timestamps is not None:
         x = timestamps[:len(soc_list)]
         xlabel = "Time"
@@ -43,32 +50,41 @@ def plot_bess_rollout(
         x = np.arange(len(soc_list))
         xlabel = "Step"
 
-    # Number of subplots (price and actions are optional)
-    n_rows = 3
+    # -----------------------------
+    # Determine number of subplots
+    # -----------------------------
+    n_rows = 1  # SoC is mandatory
     if price_list is not None:
+        n_rows += 1
+    if demand_list is not None:
         n_rows += 1
     if action_list is not None:
         n_rows += 1
+    if soh_list is not None:
+        n_rows += 1
+    if reward_list is not None:
+        n_rows += 1
 
     fig, axs = plt.subplots(n_rows, 1, figsize=figsize, sharex=False)
+    if n_rows == 1:
+        axs = [axs]
+
     row = 0
 
     # ----------------------------------------------------------------------
-    # SoC plot
+    # SoC plot (mandatory)
     # ----------------------------------------------------------------------
-    line = axs[row].axhline(0.9, color="red", linestyle="--", linewidth=1.5)
+    axs[row].axhline(0.9, color="red", linestyle="--", linewidth=1.5, label="SoC bounds")
     axs[row].axhline(0.1, color="red", linestyle="--", linewidth=1.5)
-    line.set_label("SoC bounds")
-    
+
     axs[row].plot(x, soc_list, label="SoC", color="blue")
-    
+
     # --- Violation markers (optional) ---
     if violated_list is not None:
-        # Make sure lengths match
         n = min(len(soc_list), len(violated_list))
         violated_indices = [i for i in range(n) if violated_list[i]]
         violated_soc = [soc_list[i] for i in violated_indices]
-    
+
         axs[row].scatter(
             [x[i] for i in violated_indices],
             violated_soc,
@@ -77,13 +93,13 @@ def plot_bess_rollout(
             marker="x",
             label="Violation",
         )
-    
-    axs[row].set_ylabel("SoC")
-    axs[row].set_title("State of Charge")
+
+    axs[row].set_ylabel("SoC", fontsize=fontsize_base)
+    axs[row].set_title("State of Charge", fontsize=fontsize_base + 2, fontweight="bold")
     axs[row].grid(True)
     axs[row].set_yticks([0.0, 0.1, 0.5, 0.9, 1.0])
-    
-    axs[row].legend(loc="upper right")
+    axs[row].tick_params(axis="both", labelsize=fontsize_base)
+    axs[row].legend(loc="upper right", fontsize=fontsize_base)
     row += 1
 
     # ----------------------------------------------------------------------
@@ -91,10 +107,23 @@ def plot_bess_rollout(
     # ----------------------------------------------------------------------
     if price_list is not None:
         axs[row].plot(x, price_list, label="Price", color="purple")
-        axs[row].set_ylabel("Price [EUR/MWh]")
-        axs[row].set_title("Electricity Price")
+        axs[row].set_ylabel("Price [EUR/MWh]", fontsize=fontsize_base)
+        axs[row].set_title("Electricity Price", fontsize=fontsize_base + 2, fontweight="bold")
         axs[row].grid(True)
-        axs[row].legend(loc="upper right")
+        axs[row].tick_params(axis="both", labelsize=fontsize_base)
+        axs[row].legend(loc="upper right", fontsize=fontsize_base)
+        row += 1
+
+    # ----------------------------------------------------------------------
+    # Demand plot (optional)
+    # ----------------------------------------------------------------------
+    if demand_list is not None:
+        axs[row].plot(x, demand_list, label="Demand", color="teal")
+        axs[row].set_ylabel("Demand", fontsize=fontsize_base)
+        axs[row].set_title("Electricity Demand", fontsize=fontsize_base + 2, fontweight="bold")
+        axs[row].grid(True)
+        axs[row].tick_params(axis="both", labelsize=fontsize_base)
+        axs[row].legend(loc="upper right", fontsize=fontsize_base)
         row += 1
 
     # ----------------------------------------------------------------------
@@ -102,33 +131,38 @@ def plot_bess_rollout(
     # ----------------------------------------------------------------------
     if action_list is not None:
         axs[row].step(x, action_list, where="mid", label="Action", color="red")
-        axs[row].set_ylabel("Action [kW]")
-        axs[row].set_title("Charge/Discharge Command")
+        axs[row].set_ylabel("Action [kW]", fontsize=fontsize_base)
+        axs[row].set_title("Charge / Discharge Command", fontsize=fontsize_base + 2, fontweight="bold")
         axs[row].grid(True)
-        axs[row].legend(loc="upper right")
+        axs[row].tick_params(axis="both", labelsize=fontsize_base)
+        axs[row].legend(loc="upper right", fontsize=fontsize_base)
         row += 1
 
     # ----------------------------------------------------------------------
-    # SoH plot
+    # SoH plot (optional)
     # ----------------------------------------------------------------------
-    axs[row].plot(x, soh_list, label="SoH", color="orange")
-    axs[row].set_ylabel("SoH")
-    axs[row].set_title("State of Health")
-    axs[row].grid(True)
-    axs[row].legend(loc="upper right")
-    row += 1
+    if soh_list is not None:
+        axs[row].plot(x, soh_list, label="SoH", color="orange")
+        axs[row].set_ylabel("SoH", fontsize=fontsize_base)
+        axs[row].set_title("State of Health", fontsize=fontsize_base + 2, fontweight="bold")
+        axs[row].grid(True)
+        axs[row].tick_params(axis="both", labelsize=fontsize_base)
+        axs[row].legend(loc="upper right", fontsize=fontsize_base)
+        row += 1
 
     # ----------------------------------------------------------------------
-    # Reward plot
+    # Reward plot (optional)
     # ----------------------------------------------------------------------
-    axs[row].plot(x, reward_list, label="Reward", color="green")
-    axs[row].set_ylabel("Reward")
-    axs[row].set_title("Rewards")
-    axs[row].grid(True)
-    axs[row].legend(loc="upper right")
-    row += 1
+    if reward_list is not None:
+        axs[row].plot(x, reward_list, label="Reward", color="green")
+        axs[row].set_ylabel("Reward", fontsize=fontsize_base)
+        axs[row].set_title("Reward", fontsize=fontsize_base + 2, fontweight="bold")
+        axs[row].grid(True)
+        axs[row].tick_params(axis="both", labelsize=fontsize_base)
+        axs[row].legend(loc="upper right", fontsize=fontsize_base)
+        row += 1
 
     # Final x-axis label
-    axs[row - 1].set_xlabel(xlabel)
+    axs[row - 1].set_xlabel(xlabel, fontsize=fontsize_base)
     plt.tight_layout()
     plt.show()
