@@ -47,6 +47,7 @@ def evaluate_financials(revenue_list, deg_cost_list, penalty_list, verbose=True)
 
     return results
 
+
 def evaluate_rollout(model, env, n_steps=None, deterministic=True):
     """
     Run one rollout of a trained agent in a given environment and collect:
@@ -82,6 +83,7 @@ def evaluate_rollout(model, env, n_steps=None, deterministic=True):
     soh_list = []
     reward_list = []
     price_true_list = []
+    demand_true_list = []
     action_list = []
 
     revenue_list = []
@@ -109,40 +111,41 @@ def evaluate_rollout(model, env, n_steps=None, deterministic=True):
         # --------------------------------------------------
         soc_list.append(obs[0])
         soh_list.append(obs[1])
-        reward_list.append(reward)
+        reward_list.append(float(reward))
 
         # --------------------------------------------------
         # Record external info
         # --------------------------------------------------
-        price_true_list.append(info["price_true"])
+        price_true_list.append(float(info["price_true"]))
+
+        # Demand (robust: may be None if demand_series=None)
+        demand_true_list.append(
+            0.0 if info.get("demand_true") is None else float(info["demand_true"])
+        )
 
         # Robust handling of continuous vs discrete actions
         if "p_kw" in info:
             action_scalar = float(info["p_kw"])
         else:
-            # Fallback, falls p_kw nicht gesetzt ist
             if isinstance(action, np.ndarray):
                 if action.ndim == 0:
-                    # 0D array: e.g. array(3) from DQN
                     action_scalar = float(action)
                 else:
-                    # 1D array: e.g. [a] from SAC/TD3
                     action_scalar = float(action[0])
             else:
                 action_scalar = float(action)
 
         action_list.append(action_scalar)
 
-        revenue_list.append(info["revenue_eur"])
-        deg_cost_list.append(info["deg_cost_eur"])
-        penalty_list.append(info["penalty_eur"])
+        revenue_list.append(float(info["revenue_eur"]))
+        deg_cost_list.append(float(info["deg_cost_eur"]))
+        penalty_list.append(float(info["penalty_eur"]))
 
-        # SoC violation flag (if provided by env)
-        violated_list.append(bool(info.get("violated", False)))
+        # SoC violation flag (matches your env key)
+        violated_list.append(bool(info.get("violated_soft_cmd", False)))
 
         if terminated or truncated:
-            print(f"Episode finished early at step {t}")
-            obs, _ = env.reset()
+            print(f"Episode finished after {t + 1} steps")
             break
 
     results = {
@@ -150,6 +153,7 @@ def evaluate_rollout(model, env, n_steps=None, deterministic=True):
         "soh": soh_list,
         "reward": reward_list,
         "price_true": price_true_list,
+        "demand_true": demand_true_list,
         "action": action_list,
         "revenue": revenue_list,
         "deg_cost": deg_cost_list,
@@ -158,3 +162,4 @@ def evaluate_rollout(model, env, n_steps=None, deterministic=True):
     }
 
     return results
+
