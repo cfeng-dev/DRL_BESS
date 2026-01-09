@@ -19,8 +19,19 @@ class BatteryEnv(gym.Env):
          last_action_norm]
 
     If use_price_forecast=True, the state is extended by a vector of
-    future normalized prices (perfect foresight) for a given horizon:
-        [ ..., price_forecast_norm[0], ..., price_forecast_norm[H-1] ]
+    future normalized prices for a given horizon:
+        [..., price_forecast_norm[0], ..., price_forecast_norm[H-1]]
+
+    If use_demand_forecast=True, the state is additionally extended by a vector of
+    future normalized demand values for the same horizon:
+        [..., demand_forecast_norm[0], ..., demand_forecast_norm[H-1]]
+
+    If both are enabled:
+        [..., price_forecast_norm[0..H-1], demand_forecast_norm[0..H-1]]
+
+    Forecast uncertainty:
+        - price forecast: additive noise in price units (absolute)
+        - demand forecast: multiplicative noise (relative), recommended
 
     Actions:
         Continuous mode:
@@ -41,40 +52,45 @@ class BatteryEnv(gym.Env):
         demand_series=None,                   # optional: demand profile (same length as price_series)
         timestamps=None,                      # optional list of datetime objects for time features
         *,
-        dt_hours: float = 0.25,               # simulation step length in hours (e.g. 1.0 for 1 hour or 0.25 for 15 min)
-        capacity_kWh: float = 50.0,           # battery energy capacity in kWh (0.2C, ~5% SoC change per 15 min)
+        dt_hours: float = 0.25,               # simulation step length in hours
+        capacity_kWh: float = 50.0,           # battery energy capacity in kWh
         p_max_kW: float = 10.0,               # max charge/discharge power in kW
         use_discrete_actions: bool = False,   # True → discrete action space (DQN); False → continuous (SAC/TD3)
-        discrete_action_values=None,          # normalized discrete actions in [-1, 1], if None → uses 21 evenly spaced values between -1 and +1
+        discrete_action_values=None,          # normalized discrete actions in [-1, 1]
         eta_c: float = 0.95,                  # charging efficiency (0–1)
         eta_d: float = 0.95,                  # discharging efficiency (0–1)
 
-        # Hard physical SoC limits (state always clipped to this range) ---
-        soc_hard_min: float = 0.1,            # hard minimum SoC (fraction)
-        soc_hard_max: float = 0.9,            # hard maximum SoC (fraction)
+        # Hard physical SoC limits
+        soc_hard_min: float = 0.1,
+        soc_hard_max: float = 0.9,
 
-        # Soft comfort band (agent may go outside, but gets increasing penalty) ---
-        soc_soft_min: float = 0.1,            # soft minimum SoC (fraction)
-        soc_soft_max: float = 0.9,            # soft maximum SoC (fraction)
+        # Soft comfort band (penalty outside)
+        soc_soft_min: float = 0.1,
+        soc_soft_max: float = 0.9,
 
-        soh_min: float = 0.3,                 # minimum allowed state of health before termination
-        initial_soc: tuple = (0.40, 0.60),    # random initial SoC range at episode start
-        price_unit: str = "EUR_per_MWh",      # price unit for conversion (can also be "EUR_per_kWh")
-        deg_cost_per_EFC: float = 0.1,        # degradation cost per equivalent full cycle (in EUR)
-        soh_deg_per_EFC: float = 0.005,       # physical SoH loss per equivalent full cycle
+        soh_min: float = 0.3,
+        initial_soc: tuple = (0.40, 0.60),
+        price_unit: str = "EUR_per_MWh",      # "EUR_per_MWh" or "EUR_per_kWh"
+        deg_cost_per_EFC: float = 0.1,        # degradation cost per equivalent full cycle (EUR)
+        soh_deg_per_EFC: float = 0.005,       # SoH loss per EFC
 
-        # Soft SoC penalty shape (increases the further SoC leaves [soc_soft_min, soc_soft_max]) ---
-        penalty_soc_soft_k: float = 5.0,      # strength
-        penalty_soc_soft_power: float = 2.0,  # 2=quadratic, 3=cubic, ...
+        penalty_soc_soft_k: float = 5.0,
+        penalty_soc_soft_power: float = 2.0,
 
-        use_price_forecast: bool = False,     # if True → include a future price window in the observation
-        forecast_horizon_hours: float = 24.0, # forecast horizon in hours (e.g. 24h)
-        episode_days: float = 7.0,            # logical episode length in days (e.g. 7 for one week)
-        random_start: bool = True,            # if True → start each episode at a random index in the time series
-        random_seed: int | None = None,       # RNG seed for reproducibility
-        scenario_gen: ForecastScenarioGenerator | None = None,  # optional: deterministic noisy forecast scenarios
-        scenario_id: int = 0,                                # scenario index for reproducible evaluation
-        vary_scenario_per_episode: bool = True,              # True (training): change episode_id each reset
+        # Forecast controls
+        use_price_forecast: bool = False,
+        use_demand_forecast: bool = False,    # NEW: include demand forecast window
+        forecast_horizon_hours: float = 24.0,
+        episode_days: float = 7.0,
+        random_start: bool = True,
+        random_seed: int | None = None,
+
+        # Scenario generators (noise)
+        price_scenario_gen: ForecastScenarioGenerator | None = None,
+        demand_scenario_gen: ForecastScenarioGenerator | None = None,  # NEW
+
+        scenario_id: int = 0,
+        vary_scenario_per_episode: bool = True,
     ):
         super().__init__()
 
@@ -86,6 +102,9 @@ class BatteryEnv(gym.Env):
             None if demand_series is None else np.asarray(demand_series, dtype=np.float32)
         )
         self.T = len(self.price_series)
+
+        if self.demand_series is not None and len(self.demand_series) != self.T:
+            raise ValueError("demand_series length must match price_series length.")
 
         # Optional timestamps for extracting daily/seasonal patterns
         self.timestamps = None
@@ -102,33 +121,33 @@ class BatteryEnv(gym.Env):
         self.p_max = float(p_max_kW)
         self.use_discrete = bool(use_discrete_actions)
 
-        # Logical episode configuration (week-based horizon)
         self.episode_days = float(episode_days)
         self.random_start = bool(random_start)
-        # Default number of steps per logical episode; may be adjusted in reset()
         self.episode_len_steps = int(round(self.episode_days * 24.0 / self.dt))
 
         # Forecast configuration
         self.use_price_forecast = bool(use_price_forecast)
+        self.use_demand_forecast = bool(use_demand_forecast)
         self.forecast_horizon_hours = float(forecast_horizon_hours)
-        if self.use_price_forecast:
-            self.forecast_horizon_steps = max(
-                1, int(round(self.forecast_horizon_hours / self.dt))
-            )
+
+        if (self.use_demand_forecast and self.demand_series is None):
+            raise ValueError("use_demand_forecast=True requires demand_series to be provided.")
+
+        if self.use_price_forecast or self.use_demand_forecast:
+            self.forecast_horizon_steps = max(1, int(round(self.forecast_horizon_hours / self.dt)))
         else:
             self.forecast_horizon_steps = 0
 
-        # Default discrete actions (at p_max=10 → [-10, -9, ..., 0, ..., +9, +10] kW)
+        # Discrete actions
         if discrete_action_values is None:
-            discrete_action_values = np.linspace(-1.0, 1.0, 21).tolist()  # 21 discrete actions between -p_max and +p_max
+            discrete_action_values = np.linspace(-1.0, 1.0, 21).tolist()
 
-        # Convert normalized discrete actions to actual power (kW)
         self.discrete_action_values = np.array(discrete_action_values, dtype=np.float32) * self.p_max
 
         self.eta_c = float(eta_c)
         self.eta_d = float(eta_d)
 
-        # --- hard + soft SoC constraints ---
+        # SoC constraints
         self.soc_hard_min = float(soc_hard_min)
         self.soc_hard_max = float(soc_hard_max)
         self.soc_soft_min = float(soc_soft_min)
@@ -152,25 +171,35 @@ class BatteryEnv(gym.Env):
         self.np_random, _ = gym.utils.seeding.np_random(random_seed)
 
         # Normalization values
-        self._max_price = float(np.max(self.price_series))
+        self._max_price = float(np.max(self.price_series)) if self.T > 0 else 1.0
         self._max_demand = None if self.demand_series is None else float(np.max(self.demand_series))
 
-        # Scenario generator for noisy price forecasts
-        self.scenario_gen = scenario_gen
+        # Scenario generators
+        self.price_scenario_gen = price_scenario_gen
+        self.demand_scenario_gen = demand_scenario_gen
+
         self.scenario_id = int(scenario_id)
         self.vary_scenario_per_episode = bool(vary_scenario_per_episode)
-        self._forecast_z = None
+
+        self._forecast_z_price = None
+        self._forecast_z_demand = None
         self._episode_counter = 0  # used to vary scenario noise across resets (training)
 
         # Safety: if using forecast + scenario_gen, dimensions must match
-        if self.use_price_forecast and self.forecast_horizon_steps > 0 and self.scenario_gen is not None:
-            if int(self.scenario_gen.H) != int(self.forecast_horizon_steps):
-                raise ValueError(
-                    f"scenario_gen.H ({self.scenario_gen.H}) must equal forecast_horizon_steps ({self.forecast_horizon_steps})."
-                )
+        if self.forecast_horizon_steps > 0:
+            if self.use_price_forecast and self.price_scenario_gen is not None:
+                if int(self.price_scenario_gen.H) != int(self.forecast_horizon_steps):
+                    raise ValueError(
+                        f"price_scenario_gen.H ({self.price_scenario_gen.H}) must equal forecast_horizon_steps ({self.forecast_horizon_steps})."
+                    )
+            if self.use_demand_forecast and self.demand_scenario_gen is not None:
+                if int(self.demand_scenario_gen.H) != int(self.forecast_horizon_steps):
+                    raise ValueError(
+                        f"demand_scenario_gen.H ({self.demand_scenario_gen.H}) must equal forecast_horizon_steps ({self.forecast_horizon_steps})."
+                    )
 
         # ----------------------------------------
-        # Action space: continuous OR discrete
+        # Action space
         # ----------------------------------------
         if self.use_discrete:
             self.action_space = spaces.Discrete(len(self.discrete_action_values))
@@ -184,7 +213,6 @@ class BatteryEnv(gym.Env):
         # ----------------------------------------
         # Observation space
         # ----------------------------------------
-        # Base observation dimensions (9 features)
         base_low = np.array(
             [0.0, self.soh_min, -1.0, -1.0, -1.0, -1.0, 0.0, 0.0, -1.0],
             dtype=np.float32,
@@ -194,10 +222,15 @@ class BatteryEnv(gym.Env):
             dtype=np.float32,
         )
 
+        extra_dim = 0
         if self.use_price_forecast and self.forecast_horizon_steps > 0:
-            # Additional future price features, each normalized in [0, 1]
-            extra_low = np.zeros(self.forecast_horizon_steps, dtype=np.float32)
-            extra_high = np.ones(self.forecast_horizon_steps, dtype=np.float32)
+            extra_dim += self.forecast_horizon_steps
+        if self.use_demand_forecast and self.forecast_horizon_steps > 0:
+            extra_dim += self.forecast_horizon_steps
+
+        if extra_dim > 0:
+            extra_low = np.zeros(extra_dim, dtype=np.float32)
+            extra_high = np.ones(extra_dim, dtype=np.float32)
             low = np.concatenate([base_low, extra_low])
             high = np.concatenate([base_high, extra_high])
         else:
@@ -218,8 +251,7 @@ class BatteryEnv(gym.Env):
 
         options = {} if options is None else dict(options)
 
-        # Choose logical episode start index (e.g. random week in the time series)
-        # Adjust episode_len_steps if the time series is shorter than the desired episode length.
+        # Episode length & start index
         max_episode_len = int(round(self.episode_days * 24.0 / self.dt))
         if self.T <= max_episode_len:
             self.episode_len_steps = self.T
@@ -243,86 +275,78 @@ class BatteryEnv(gym.Env):
         self._last_soc = self.soc
         self.last_action = 0.0
 
-        # Allow overriding episode_id explicitly (useful for evaluation scripts)
         forced_episode_id = options.get("episode_id", None)
 
-        if self.use_price_forecast and self.forecast_horizon_steps > 0 and self.scenario_gen is not None:
-            if forced_episode_id is not None:
-                episode_id = int(forced_episode_id)
-            else:
-                # training default: vary noise pattern across resets
-                if self.vary_scenario_per_episode:
-                    episode_id = self.scenario_id + self._episode_counter
-                else:
-                    # evaluation default: fixed scenario pattern
-                    episode_id = self.scenario_id
-
-            self._forecast_z = self.scenario_gen.generate_episode_noise(
-                episode_len=self.episode_len_steps,
-                episode_id=episode_id,
-            )
+        # Decide episode_id used by BOTH forecasts (for reproducible scenario pairing)
+        if forced_episode_id is not None:
+            episode_id = int(forced_episode_id)
         else:
-            self._forecast_z = None
+            if self.vary_scenario_per_episode:
+                episode_id = self.scenario_id + self._episode_counter
+            else:
+                episode_id = self.scenario_id
 
-        # increment counter AFTER using it
+        # Generate noise matrices
+        self._forecast_z_price = None
+        self._forecast_z_demand = None
+
+        if self.forecast_horizon_steps > 0:
+            if self.use_price_forecast and self.price_scenario_gen is not None:
+                self._forecast_z_price = self.price_scenario_gen.generate_episode_noise(
+                    episode_len=self.episode_len_steps,
+                    episode_id=episode_id,
+                )
+            if self.use_demand_forecast and self.demand_scenario_gen is not None:
+                self._forecast_z_demand = self.demand_scenario_gen.generate_episode_noise(
+                    episode_len=self.episode_len_steps,
+                    episode_id=episode_id,
+                )
+
+        # increment AFTER using it
         self._episode_counter += 1
 
         price_true = float(self.price_series[self.t])
         price_obs = price_true
 
-        obs = self._get_obs(price_obs, None)
+        demand = None if self.demand_series is None else float(self.demand_series[self.t])
+        obs = self._get_obs(price_obs, demand)
         return obs, {}
 
     # ----------------------------------------------------
     # STEP
     # ----------------------------------------------------
     def step(self, action):
-        # ----------------------------------------
-        # 1. Interpret action (discrete or continuous)
-        # ----------------------------------------
+        # 1) Interpret action
         if self.use_discrete:
-            # Discrete action: integer index → map to actual kW command
             a = float(self.discrete_action_values[action])
         else:
-            # Continuous action: take the float value directly
             a = float(np.clip(action[0], -self.p_max, self.p_max))
 
-        # ----------------------------------------
-        # 2. Fetch true values
-        # ----------------------------------------
+        # 2) Fetch true values
         price_true = float(self.price_series[self.t])
-        demand = None if self.demand_series is None else float(self.demand_series[self.t])
+        demand_true = None if self.demand_series is None else float(self.demand_series[self.t])
 
-        # Observed price (no additional Gaussian noise here; scenarios handled via PriceScenarioGenerator in forecast)
-        price_obs = price_true
+        price_obs = price_true  # observed price (forecasts handled in obs)
 
-        # ----------------------------------------
-        # 3. Battery SoC update with hard saturation [0,1]
-        # ----------------------------------------
-        # Commanded energy in kWh (positive: charging, negative: discharging)
+        # 3) Battery SoC update with hard saturation
         energy_cmd_kWh = a * self.dt
 
-        # Commanded SoC delta (for "intent")
         if energy_cmd_kWh >= 0.0:
             delta_soc_cmd = (energy_cmd_kWh * self.eta_c) / self.capacity
         else:
             delta_soc_cmd = (energy_cmd_kWh / self.eta_d) / self.capacity
 
-        soc_pre_cmd = self.soc + delta_soc_cmd  # what the agent "wanted"
+        soc_pre_cmd = self.soc + delta_soc_cmd
 
-        # --- Apply physical saturation for the actually executed energy wrt HARD bounds ---
         if energy_cmd_kWh >= 0.0:
-            # Charging: cannot exceed soc_hard_max
             soc_headroom = self.soc_hard_max - self.soc
             energy_max_kWh = (soc_headroom * self.capacity) / max(self.eta_c, 1e-6)
             energy_eff_kWh = float(np.clip(energy_cmd_kWh, 0.0, energy_max_kWh))
         else:
-            # Discharging: cannot go below soc_hard_min
             soc_above_min = self.soc - self.soc_hard_min
-            energy_min_kWh = - (soc_above_min * self.capacity * self.eta_d)
+            energy_min_kWh = -(soc_above_min * self.capacity * self.eta_d)
             energy_eff_kWh = float(np.clip(energy_cmd_kWh, energy_min_kWh, 0.0))
 
-        # SoC change based on *effective* energy
         if energy_eff_kWh >= 0.0:
             delta_soc = (energy_eff_kWh * self.eta_c) / self.capacity
         else:
@@ -330,7 +354,6 @@ class BatteryEnv(gym.Env):
 
         self.soc = float(np.clip(self.soc + delta_soc, self.soc_hard_min, self.soc_hard_max))
 
-        # --- Increasing soft penalty outside comfort band [soc_soft_min, soc_soft_max] ---
         below = max(0.0, self.soc_soft_min - self.soc)
         above = max(0.0, self.soc - self.soc_soft_max)
         soft_violation = below + above
@@ -339,12 +362,9 @@ class BatteryEnv(gym.Env):
             (below ** self.penalty_soc_soft_power) + (above ** self.penalty_soc_soft_power)
         )
 
-        # Optional: you can track whether the agent *commanded* going outside the comfort band
         violated_soft_cmd = (soc_pre_cmd < self.soc_soft_min) or (soc_pre_cmd > self.soc_soft_max)
 
-        # ----------------------------------------
-        # 4. Battery degradation (simple EFC model)
-        # ----------------------------------------
+        # 4) Degradation (simple EFC model)
         delta_soc_actual = abs(self.soc - self._last_soc)
         efc_step = delta_soc_actual / 2.0
 
@@ -353,12 +373,9 @@ class BatteryEnv(gym.Env):
 
         deg_cost_eur = efc_step * self.deg_cost_per_EFC
 
-        # SoH update (still used for termination)
         self.soh = max(self.soh_min, self.soh - self.soh_deg_per_EFC * efc_step)
 
-        # ----------------------------------------
-        # 5. Revenue from charging/discharging (based on effective energy)
-        # ----------------------------------------
+        # 5) Revenue
         if self.price_unit == "EUR_per_MWh":
             price_per_kWh = price_true / 1000.0
         else:
@@ -366,36 +383,26 @@ class BatteryEnv(gym.Env):
 
         revenue_eur = -price_per_kWh * energy_eff_kWh
 
-        # ----------------------------------------
-        # 6. Penalties
-        # ----------------------------------------
-        penalty = 0.0
-        penalty += penalty_soc_soft
-
+        # 6) Reward
+        penalty = float(penalty_soc_soft)
         reward = float(revenue_eur - deg_cost_eur + penalty)
 
-        # ----------------------------------------
-        # 7. Advance state
-        # ----------------------------------------
+        # 7) Advance
         self.last_action = a
         self.t += 1
         self.steps_in_episode += 1
 
-        # Termination due to SoH limit; truncation due to time horizon / data end
         terminated = (self.soh <= self.soh_min + 1e-12)
         truncated = False
-
-        # Truncate if logical episode horizon is reached
         if self.steps_in_episode >= self.episode_len_steps:
             truncated = True
-
-        # Truncate if we reach the end of the available time series
         if self.t >= self.T:
             truncated = True
 
-        obs = self._get_obs(price_obs, demand)
+        obs = self._get_obs(price_obs, demand_true)
         info = {
             "price_true": price_true,
+            "demand_true": demand_true,
             "revenue_eur": revenue_eur,
             "deg_cost_eur": deg_cost_eur,
             "penalty_eur": penalty,
@@ -416,10 +423,6 @@ class BatteryEnv(gym.Env):
     # INTERNAL FUNCTIONS
     # ----------------------------------------------------
     def _get_time_features(self, t: int):
-        """
-        Compute cyclic time features (sin/cos of time-of-day & day-of-year).
-        If timestamps exist, use them. Otherwise generate synthetic time cycles.
-        """
         idx = max(0, min(t, self.T - 1))
 
         if self.timestamps is not None:
@@ -450,21 +453,18 @@ class BatteryEnv(gym.Env):
         """
         Construct normalized observation vector.
 
-        If use_price_forecast=True, the observation is extended by
-        a window of future normalized prices (perfect knowledge of future prices).
+        Forecast windows:
+            - price forecast: additive noise in price units (absolute)
+            - demand forecast: multiplicative noise (relative)
         """
         sin_tod, cos_tod, sin_doy, cos_doy = self._get_time_features(self.t)
 
-        # Current observed price, normalized
         price_norm = float(price_obs) / (self._max_price + 1e-6)
 
-        # Normalized demand (if available)
         if self._max_demand is None:
             demand_norm = 0.0
         else:
-            demand_norm = (
-                0.0 if demand is None else float(demand) / (self._max_demand + 1e-6)
-            )
+            demand_norm = 0.0 if demand is None else float(demand) / (self._max_demand + 1e-6)
 
         last_action_norm = float(self.last_action / self.p_max)
 
@@ -480,28 +480,49 @@ class BatteryEnv(gym.Env):
             last_action_norm,
         ]
 
-        # Optional: append future price window (scenario-based noisy forecasts)
+        # Noise row index for the current step inside the episode
+        step_in_ep = max(0, min(self.steps_in_episode, max(0, self.episode_len_steps - 1)))
+
+        # Append future price window (if enabled)
         if self.use_price_forecast and self.forecast_horizon_steps > 0:
             prices_future = []
             for k in range(1, self.forecast_horizon_steps + 1):
-                idx = min(self.t + k, self.T - 1)  # clamp at final index
+                idx = min(self.t + k, self.T - 1)
                 p_true_future = float(self.price_series[idx])
 
-                if self._forecast_z is not None and self.scenario_gen is not None:
-                    step_in_ep = max(0, min(self.steps_in_episode, self.episode_len_steps - 1))
-                    eps = float(self._forecast_z[step_in_ep, k - 1])  # eps ~ N(0,1)
-
-                    sigma_rel = float(self.scenario_gen.sigma[k - 1])  # relative std at horizon k
-                    sigma_abs = sigma_rel * abs(p_true_future)         # absolute std in price units
-
+                if self._forecast_z_price is not None and self.price_scenario_gen is not None:
+                    eps = float(self._forecast_z_price[step_in_ep, k - 1])  # ~ N(0,1)
+                    sigma_rel = float(self.price_scenario_gen.sigma[k - 1])
+                    sigma_abs = sigma_rel * max(abs(p_true_future), 1e-6)  # avoid 0-scale
                     p_used_future = p_true_future + eps * sigma_abs
                 else:
                     p_used_future = p_true_future
 
                 p_norm_future = p_used_future / (self._max_price + 1e-6)
-                prices_future.append(p_norm_future)
+                prices_future.append(float(p_norm_future))
 
             obs_components.extend(prices_future)
+
+        # Append future demand window (if enabled)
+        if self.use_demand_forecast and self.forecast_horizon_steps > 0:
+            demands_future = []
+            for k in range(1, self.forecast_horizon_steps + 1):
+                idx = min(self.t + k, self.T - 1)
+                d_true_future = float(self.demand_series[idx])
+
+                if self._forecast_z_demand is not None and self.demand_scenario_gen is not None:
+                    eps = float(self._forecast_z_demand[step_in_ep, k - 1])  # ~ N(0,1)
+                    sigma_rel = float(self.demand_scenario_gen.sigma[k - 1])
+                    # Relative noise for demand (recommended)
+                    d_used_future = d_true_future * (1.0 + eps * sigma_rel)
+                    d_used_future = max(d_used_future, 0.0)  # demand can't be negative
+                else:
+                    d_used_future = d_true_future
+
+                d_norm_future = d_used_future / (self._max_demand + 1e-6)
+                demands_future.append(float(d_norm_future))
+
+            obs_components.extend(demands_future)
 
         return np.array(obs_components, dtype=np.float32)
 
