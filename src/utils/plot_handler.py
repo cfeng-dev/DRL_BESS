@@ -143,6 +143,21 @@ def plot_bess_rollout(
     # ----------------------------------------------------------------------
     if soh_list is not None:
         axs[row].plot(x, soh_list, label="SoH", color="orange")
+
+        # --- show last SoH value on the plot ---
+        last_soh = float(soh_list[-1])
+        last_x = x[len(soh_list) - 1]
+
+        axs[row].scatter([last_x], [last_soh], s=50, color="black", zorder=5)
+        axs[row].annotate(
+            f"last: {last_soh:.3f}",
+            xy=(last_x, last_soh),
+            xytext=(8, 0),
+            textcoords="offset points",
+            va="center",
+            fontsize=fontsize_base,
+        )
+
         axs[row].set_ylabel("SoH", fontsize=fontsize_base)
         axs[row].set_title("State of Health", fontsize=fontsize_base + 2, fontweight="bold")
         axs[row].grid(True)
