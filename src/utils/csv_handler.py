@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
-
+import os
+from datetime import datetime
+from typing import List, Dict, Optional
 
 def load_price_data(
     csv_path: str,
@@ -195,3 +197,65 @@ def load_demand_data(
     timestamps = demand.index
 
     return df_resampled, demand_series, timestamps
+
+
+
+def save_records(
+    records: List[Dict],
+    out_path: str,
+    agent_name: str,
+    unique_cols: Optional[list] = None,
+    add_timestamp: bool = True,
+    experiment_id: Optional[str] = None,
+):
+    """
+    Save experiment records to CSV with append + de-duplication.
+
+    Parameters
+    ----------
+    records : list of dict
+        List of experiment result records.
+    out_path : str
+        Path to CSV file (e.g. results/learning_steps_records.csv).
+    agent_name : str
+        Name of the agent (e.g. "DQN", "QRDQN", "TD3").
+    unique_cols : list or None
+        Columns defining uniqueness (default: ["agent", "training_steps", "run_id"]).
+    add_timestamp : bool
+        Whether to add a timestamp column.
+    experiment_id : str or None
+        Optional experiment identifier (same for all rows).
+    """
+
+    if unique_cols is None:
+        unique_cols = ["agent", "training_steps", "run_id"]
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    df_new = pd.DataFrame(records)
+    df_new["agent"] = agent_name
+
+    if add_timestamp:
+        df_new["timestamp"] = datetime.now().isoformat(timespec="seconds")
+
+    if experiment_id is not None:
+        df_new["experiment_id"] = experiment_id
+
+    # Append if file exists
+    if os.path.exists(out_path):
+        df_old = pd.read_csv(out_path)
+        df_all = pd.concat([df_old, df_new], ignore_index=True)
+    else:
+        df_all = df_new
+
+    # Drop duplicates (keep latest)
+    df_all = df_all.drop_duplicates(subset=unique_cols, keep="last")
+
+    df_all.to_csv(out_path, index=False)
+
+    print(
+        f"[save_experiment_records] Saved {len(df_new)} new rows "
+        f"(total={len(df_all)}) to {out_path}"
+    )
+
+    return df_all
