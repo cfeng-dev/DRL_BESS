@@ -203,7 +203,6 @@ def load_demand_data(
 def save_records(
     records: List[Dict],
     out_path: str,
-    agent_name: str,
     unique_cols: Optional[list] = None,
     add_timestamp: bool = True,
     experiment_id: Optional[str] = None,
@@ -233,7 +232,9 @@ def save_records(
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     df_new = pd.DataFrame(records)
-    df_new["agent"] = agent_name
+
+    if "agent" not in df_new.columns:
+        raise ValueError("Records must contain an 'agent' field.")
 
     if add_timestamp:
         df_new["timestamp"] = datetime.now().isoformat(timespec="seconds")
@@ -257,5 +258,3 @@ def save_records(
         f"[save_experiment_records] Saved {len(df_new)} new rows "
         f"(total={len(df_all)}) to {out_path}"
     )
-
-    return df_all
