@@ -83,23 +83,26 @@ def load_price_data(
     return df_resampled, price_series, timestamps
 
 
+
 def load_demand_data(
     csv_path: str,
     resolution: str = "15min",
     time_range: tuple[str, str] | None = None,
     tz: str = "Europe/Berlin",
     demand_col_mode: str = "netzlast",  # "netzlast" | "netzlast_inkl_pumpspeicher" | "pumpspeicher" | "residuallast"
+    demand_scale: float = 1.0,
 ):
     """
     Load electricity demand (SMARD-like CSV) and return:
-        - df_resampled: the full (or sliced) resampled DataFrame
-        - demand_series: numpy array (float32) (average power in MW)
+        - df_resampled: resampled DataFrame (possibly sliced)
+        - demand_series: numpy array (float32) of demand ENERGY per interval in MWh (SCALED)
         - timestamps: pandas DatetimeIndex
 
     Source:
         SMARD – Bundesnetzagentur:
         https://www.smard.de
         
+
     Parameters
     ----------
     csv_path : str
@@ -118,15 +121,14 @@ def load_demand_data(
             - "netzlast_inkl_pumpspeicher"
             - "pumpspeicher"
             - "residuallast"
+    demand_scale : float
+        Scaling factor (e.g. 1e-5).
 
     Returns
     -------
     df_resampled : pd.DataFrame
-        Resampled dataframe (possibly time-sliced)
-    demand_series : np.ndarray
-        Float32 numpy array of demand in MW (average over interval)
+    demand_series : np.ndarray (float32)
     timestamps : pd.DatetimeIndex
-        Timestamp index matching the demand series
     """
 
     col_map = {
@@ -136,7 +138,9 @@ def load_demand_data(
         "residuallast": "Residuallast [MWh] Originalauflösungen",
     }
     if demand_col_mode not in col_map:
-        raise ValueError(f"Unknown demand_col_mode='{demand_col_mode}'. Choose one of {list(col_map.keys())}")
+        raise ValueError(
+            f"Unknown demand_col_mode='{demand_col_mode}'. Choose one of {list(col_map.keys())}"
+        )
 
     df = pd.read_csv(
         csv_path,
@@ -151,30 +155,26 @@ def load_demand_data(
     if missing:
         raise ValueError(f"Missing required columns: {sorted(missing)}")
 
-    # Parse and localize timestamps
+    # Parse and localize timestamps (DST-safe)
     t0 = pd.to_datetime(df["Datum von"], format="%d.%m.%Y %H:%M", errors="raise")
     t1 = pd.to_datetime(df["Datum bis"], format="%d.%m.%Y %H:%M", errors="raise")
 
-    # Localize (DST-safe)
     t0 = t0.dt.tz_localize(tz, ambiguous="infer", nonexistent="shift_forward")
     t1 = t1.dt.tz_localize(tz, ambiguous="infer", nonexistent="shift_forward")
 
+    # Sanity check
     dt_hours = (t1 - t0).dt.total_seconds() / 3600.0
     if (dt_hours <= 0).any():
         raise ValueError("Found non-positive intervals in 'Datum von'/'Datum bis'.")
 
-    # Demand energy in interval (MWh), convert to average power (MW)
+    # Demand energy per interval (MWh)
     demand_MWh = pd.to_numeric(df[col_map[demand_col_mode]], errors="coerce")
     if demand_MWh.isna().any():
         bad = int(demand_MWh.isna().sum())
         raise ValueError(f"Could not parse {bad} values in '{col_map[demand_col_mode]}'.")
 
-    demand_MW = demand_MWh / dt_hours
-
     df["Datum (MEZ)"] = t0
     df["demand_MWh"] = demand_MWh
-    df["demand_MW"] = demand_MW
-
     df = df.set_index("Datum (MEZ)").sort_index()
 
     # Optional slicing BEFORE resampling
@@ -191,10 +191,14 @@ def load_demand_data(
     else:
         raise ValueError("resolution must be '1h' or '15min'")
 
-    demand = df_resampled["demand_MWh"].dropna().astype(np.float32)
+    df_resampled["demand_MWh"] = (
+        df_resampled["demand_MWh"].astype(np.float32) * np.float32(demand_scale)
+    )
 
-    demand_series = demand.values.astype(np.float32)
-    timestamps = demand.index
+    series = df_resampled["demand_MWh"].dropna()
+
+    demand_series = series.values.astype(np.float32)
+    timestamps = series.index
 
     return df_resampled, demand_series, timestamps
 
