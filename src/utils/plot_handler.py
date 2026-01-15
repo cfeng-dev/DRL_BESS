@@ -177,7 +177,8 @@ def plot_bess_rollout(
         axs[row].legend(loc="upper right", fontsize=fontsize_base)
         row += 1
 
-    # Final x-axis label
-    axs[row - 1].set_xlabel(xlabel, fontsize=fontsize_base)
+    # Add x-label to ALL subplots
+    for ax in axs:
+        ax.set_xlabel(xlabel, fontsize=fontsize_base)
     plt.tight_layout()
     plt.show()
