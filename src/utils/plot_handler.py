@@ -119,7 +119,7 @@ def plot_bess_rollout(
     # ----------------------------------------------------------------------
     if demand_list is not None:
         axs[row].plot(x, demand_list, label="Demand", color="teal")
-        axs[row].set_ylabel("Demand", fontsize=fontsize_base)
+        axs[row].set_ylabel("Demand [MWh]", fontsize=fontsize_base)
         axs[row].set_title("Electricity Demand", fontsize=fontsize_base + 2, fontweight="bold")
         axs[row].grid(True)
         axs[row].tick_params(axis="both", labelsize=fontsize_base)
