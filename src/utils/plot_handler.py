@@ -74,8 +74,8 @@ def plot_bess_rollout(
     # ----------------------------------------------------------------------
     # SoC plot (mandatory)
     # ----------------------------------------------------------------------
-    axs[row].axhline(0.9, color="red", linestyle="--", linewidth=1.5, label="SoC bounds")
-    axs[row].axhline(0.1, color="red", linestyle="--", linewidth=1.5)
+    axs[row].axhline(1.0, color="red", linestyle="--", linewidth=1.5, label="SoC bounds")
+    axs[row].axhline(0.0, color="red", linestyle="--", linewidth=1.5)
 
     axs[row].plot(x, soc_list, label="SoC", color="blue")
 
@@ -97,7 +97,7 @@ def plot_bess_rollout(
     axs[row].set_ylabel("SoC", fontsize=fontsize_base)
     axs[row].set_title("State of Charge", fontsize=fontsize_base + 2, fontweight="bold")
     axs[row].grid(True)
-    axs[row].set_yticks([0.0, 0.1, 0.5, 0.9, 1.0])
+    axs[row].set_yticks([0.0, 0.5, 1.0])
     axs[row].tick_params(axis="both", labelsize=fontsize_base)
     axs[row].legend(loc="upper right", fontsize=fontsize_base)
     row += 1

@@ -30,8 +30,13 @@ class BatteryEnv(gym.Env):
         [..., price_forecast_norm[0..H-1], demand_forecast_norm[0..H-1]]
 
     Forecast uncertainty:
-        - price forecast: additive noise in price units (absolute)
-        - demand forecast: multiplicative noise (relative), recommended
+        - price forecast: relative sigma per horizon (sigma[k]) converted to absolute units via |p_true|
+        - demand forecast: multiplicative relative noise
+
+    Expose uncertainty to the agent
+        - include_price_sigma=True  -> append sigma_price_norm[0..H-1]
+        - include_demand_sigma=True -> append sigma_demand_norm[0..H-1]
+      (sigma vectors are normalized to [0,1] by dividing by max sigma)
 
     Actions:
         Continuous mode:
@@ -61,12 +66,12 @@ class BatteryEnv(gym.Env):
         eta_d: float = 0.95,                  # discharging efficiency (0–1)
 
         # Hard physical SoC limits
-        soc_hard_min: float = 0.1,
-        soc_hard_max: float = 0.9,
+        soc_hard_min: float = 0.0,
+        soc_hard_max: float = 1.0,
 
         # Soft comfort band (penalty outside)
-        soc_soft_min: float = 0.1,
-        soc_soft_max: float = 0.9,
+        soc_soft_min: float = 0.0,
+        soc_soft_max: float = 1.0,
 
         soh_min: float = 0.3,
         initial_soc: tuple = (0.40, 0.60),
@@ -78,16 +83,21 @@ class BatteryEnv(gym.Env):
         penalty_soc_soft_power: float = 2.0,
 
         # Forecast controls
-        use_price_forecast: bool = False,
-        use_demand_forecast: bool = False,    # NEW: include demand forecast window
+        use_price_forecast: bool = False,     # Include price forecast window
+        use_demand_forecast: bool = False,    # Include demand forecast window
         forecast_horizon_hours: float = 24.0,
+
+        # Expose uncertainty to agent
+        include_price_sigma: bool = True,
+        include_demand_sigma: bool = True,
+
         episode_days: float = 7.0,
         random_start: bool = True,
         random_seed: int | None = None,
 
         # Scenario generators (noise)
         price_scenario_gen: ForecastScenarioGenerator | None = None,
-        demand_scenario_gen: ForecastScenarioGenerator | None = None,  # NEW
+        demand_scenario_gen: ForecastScenarioGenerator | None = None,
 
         scenario_id: int = 0,
         vary_scenario_per_episode: bool = True,
@@ -129,6 +139,16 @@ class BatteryEnv(gym.Env):
         self.use_price_forecast = bool(use_price_forecast)
         self.use_demand_forecast = bool(use_demand_forecast)
         self.forecast_horizon_hours = float(forecast_horizon_hours)
+
+        # NEW: expose uncertainty flags
+        self.include_price_sigma = bool(include_price_sigma)
+        self.include_demand_sigma = bool(include_demand_sigma)
+
+        # only meaningful if corresponding forecast is enabled
+        if not self.use_price_forecast:
+            self.include_price_sigma = False
+        if not self.use_demand_forecast:
+            self.include_demand_sigma = False
 
         if (self.use_demand_forecast and self.demand_series is None):
             raise ValueError("use_demand_forecast=True requires demand_series to be provided.")
@@ -185,6 +205,16 @@ class BatteryEnv(gym.Env):
         self._forecast_z_demand = None
         self._episode_counter = 0  # used to vary scenario noise across resets (training)
 
+        # Sigma normalization (map sigma vectors into [0,1])
+        self._sigma_price_max = 1.0
+        self._sigma_demand_max = 1.0
+        if self.price_scenario_gen is not None and hasattr(self.price_scenario_gen, "sigma"):
+            sig = np.asarray(self.price_scenario_gen.sigma, dtype=np.float32)
+            self._sigma_price_max = float(np.max(sig)) if sig.size > 0 else 1.0
+        if self.demand_scenario_gen is not None and hasattr(self.demand_scenario_gen, "sigma"):
+            sig = np.asarray(self.demand_scenario_gen.sigma, dtype=np.float32)
+            self._sigma_demand_max = float(np.max(sig)) if sig.size > 0 else 1.0
+
         # Safety: if using forecast + scenario_gen, dimensions must match
         if self.forecast_horizon_steps > 0:
             if self.use_price_forecast and self.price_scenario_gen is not None:
@@ -226,6 +256,12 @@ class BatteryEnv(gym.Env):
         if self.use_price_forecast and self.forecast_horizon_steps > 0:
             extra_dim += self.forecast_horizon_steps
         if self.use_demand_forecast and self.forecast_horizon_steps > 0:
+            extra_dim += self.forecast_horizon_steps
+
+        # NEW: add sigma vectors as features
+        if self.include_price_sigma and self.forecast_horizon_steps > 0 and (self.price_scenario_gen is not None):
+            extra_dim += self.forecast_horizon_steps
+        if self.include_demand_sigma and self.forecast_horizon_steps > 0 and (self.demand_scenario_gen is not None):
             extra_dim += self.forecast_horizon_steps
 
         if extra_dim > 0:
@@ -454,8 +490,11 @@ class BatteryEnv(gym.Env):
         Construct normalized observation vector.
 
         Forecast windows:
-            - price forecast: additive noise in price units (absolute)
-            - demand forecast: multiplicative noise (relative)
+            - price forecast: relative sigma per horizon -> absolute noise via |p_true|
+            - demand forecast: multiplicative relative noise
+
+        NEW:
+            - appends sigma vectors (normalized to [0,1]) if include_*_sigma is enabled
         """
         sin_tod, cos_tod, sin_doy, cos_doy = self._get_time_features(self.t)
 
@@ -513,7 +552,6 @@ class BatteryEnv(gym.Env):
                 if self._forecast_z_demand is not None and self.demand_scenario_gen is not None:
                     eps = float(self._forecast_z_demand[step_in_ep, k - 1])  # ~ N(0,1)
                     sigma_rel = float(self.demand_scenario_gen.sigma[k - 1])
-                    # Relative noise for demand (recommended)
                     d_used_future = d_true_future * (1.0 + eps * sigma_rel)
                     d_used_future = max(d_used_future, 0.0)  # demand can't be negative
                 else:
@@ -523,6 +561,33 @@ class BatteryEnv(gym.Env):
                 demands_future.append(float(d_norm_future))
 
             obs_components.extend(demands_future)
+
+        # ----------------------------------------------------
+        # Append sigma (uncertainty) vectors (if enabled)
+        # ----------------------------------------------------
+        if (
+            self.include_price_sigma
+            and self.use_price_forecast
+            and self.forecast_horizon_steps > 0
+            and (self.price_scenario_gen is not None)
+            and hasattr(self.price_scenario_gen, "sigma")
+        ):
+            sig = np.asarray(self.price_scenario_gen.sigma, dtype=np.float32)
+            sig_norm = sig / (self._sigma_price_max + 1e-6)
+            sig_norm = np.clip(sig_norm, 0.0, 1.0)
+            obs_components.extend([float(x) for x in sig_norm])
+
+        if (
+            self.include_demand_sigma
+            and self.use_demand_forecast
+            and self.forecast_horizon_steps > 0
+            and (self.demand_scenario_gen is not None)
+            and hasattr(self.demand_scenario_gen, "sigma")
+        ):
+            sig = np.asarray(self.demand_scenario_gen.sigma, dtype=np.float32)
+            sig_norm = sig / (self._sigma_demand_max + 1e-6)
+            sig_norm = np.clip(sig_norm, 0.0, 1.0)
+            obs_components.extend([float(x) for x in sig_norm])
 
         return np.array(obs_components, dtype=np.float32)
 
