@@ -88,8 +88,8 @@ class BatteryEnv(gym.Env):
         forecast_horizon_hours: float = 24.0,
 
         # Expose uncertainty to agent
-        include_price_sigma: bool = True,
-        include_demand_sigma: bool = True,
+        include_price_sigma: bool = False,
+        include_demand_sigma: bool = False,
 
         episode_days: float = 7.0,
         random_start: bool = True,
