@@ -12,6 +12,10 @@ def plot_bess_rollout(
     violated_list=None,
     figsize=(14, 24),
     fontsize_base=14, # Global font size control
+
+    grid_import_load_kWh_list=None,   # office load supplied by grid
+    supplied_to_load_kWh_list=None,   # office load supplied by BESS
+    dt_hours: float = 0.25,
 ):
     """
     Generic plotting function for BESS environment rollouts.
@@ -58,6 +62,11 @@ def plot_bess_rollout(
         n_rows += 1
     if demand_list is not None:
         n_rows += 1
+
+    # Peak-shaving flow plot
+    if (grid_import_load_kWh_list is not None) or (supplied_to_load_kWh_list is not None):
+        n_rows += 1
+
     if action_list is not None:
         n_rows += 1
     if soh_list is not None:
@@ -127,6 +136,27 @@ def plot_bess_rollout(
         row += 1
 
     # ----------------------------------------------------------------------
+    # Grid vs BESS supply to office (Peak Shaving visualization)
+    # NOTE: Plot in MWh per step (to match demand_list)
+    # ----------------------------------------------------------------------
+    if (grid_import_load_kWh_list is not None) or (supplied_to_load_kWh_list is not None):
+
+        if grid_import_load_kWh_list is not None:
+            e_grid_MWh = np.array(grid_import_load_kWh_list) / 1000.0
+            axs[row].plot(x, e_grid_MWh, label="Grid → Office", linewidth=2)
+
+        if supplied_to_load_kWh_list is not None:
+            e_bess_MWh = np.array(supplied_to_load_kWh_list) / 1000.0
+            axs[row].plot(x, e_bess_MWh, label="BESS → Office", linewidth=2)
+
+        axs[row].set_ylabel("Energy per step [MWh]", fontsize=fontsize_base)
+        axs[row].set_title("Office Supply (Peak Shaving Effect)", fontsize=fontsize_base + 2, fontweight="bold")
+        axs[row].grid(True)
+        axs[row].tick_params(axis="both", labelsize=fontsize_base)
+        axs[row].legend(loc="upper right", fontsize=fontsize_base)
+        row += 1
+
+    # ----------------------------------------------------------------------
     # Action plot (optional)
     # ----------------------------------------------------------------------
     if action_list is not None:
@@ -144,7 +174,6 @@ def plot_bess_rollout(
     if soh_list is not None:
         axs[row].plot(x, soh_list, label="SoH", color="orange")
 
-        # --- show last SoH value on the plot ---
         last_soh = float(soh_list[-1])
         last_x = x[len(soh_list) - 1]
 
@@ -180,5 +209,6 @@ def plot_bess_rollout(
     # Add x-label to ALL subplots
     for ax in axs:
         ax.set_xlabel(xlabel, fontsize=fontsize_base)
+
     plt.tight_layout()
     plt.show()

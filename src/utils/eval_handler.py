@@ -48,6 +48,7 @@ def evaluate_financials(revenue_list, deg_cost_list, penalty_list, verbose=True)
     return results
 
 
+
 def evaluate_rollout(model, env, n_steps=None, deterministic=True):
     """
     Run one rollout of a trained agent in a given environment and collect:
@@ -91,6 +92,10 @@ def evaluate_rollout(model, env, n_steps=None, deterministic=True):
     penalty_list = []
     violated_list = []
 
+    grid_import_load_kWh_list = []
+    supplied_to_load_kWh_list = []
+    grid_charge_kWh_list = []
+
     # Determine rollout length
     max_steps = n_steps if n_steps is not None else len(env.price_series)
 
@@ -109,19 +114,20 @@ def evaluate_rollout(model, env, n_steps=None, deterministic=True):
         # --------------------------------------------------
         # Record state and reward
         # --------------------------------------------------
-        soc_list.append(obs[0])
-        soh_list.append(obs[1])
+        soc_list.append(float(obs[0]))
+        soh_list.append(float(obs[1]))
         reward_list.append(float(reward))
 
         # --------------------------------------------------
         # Record external info
         # --------------------------------------------------
-        price_true_list.append(float(info["price_true"]))
+        price_true_list.append(float(info.get("price_true", 0.0)))
 
-        # Demand (robust: may be None if demand_series=None)
-        demand_true_list.append(
-            0.0 if info.get("demand_true") is None else float(info["demand_true"])
-        )
+        # Demand (robust key handling)
+        d_raw = info.get("demand_true", None)
+        if d_raw is None:
+            d_raw = info.get("demand_true_raw", None)
+        demand_true_list.append(0.0 if d_raw is None else float(d_raw))
 
         # Robust handling of continuous vs discrete actions
         if "p_kw" in info:
@@ -134,15 +140,21 @@ def evaluate_rollout(model, env, n_steps=None, deterministic=True):
                     action_scalar = float(action[0])
             else:
                 action_scalar = float(action)
-
         action_list.append(action_scalar)
 
-        revenue_list.append(float(info["revenue_eur"]))
-        deg_cost_list.append(float(info["deg_cost_eur"]))
-        penalty_list.append(float(info["penalty_eur"]))
+        revenue_list.append(float(info.get("revenue_eur", 0.0)))
+        deg_cost_list.append(float(info.get("deg_cost_eur", 0.0)))
+        penalty_list.append(float(info.get("penalty_eur", 0.0)))
 
         # SoC violation flag (matches your env key)
         violated_list.append(bool(info.get("violated_soft_cmd", False)))
+
+        # --------------------------------------------------
+        # Peak shaving flow keys (exist only when allow_grid_export=False)
+        # --------------------------------------------------
+        grid_import_load_kWh_list.append(float(info.get("grid_import_load_kWh", 0.0)))
+        supplied_to_load_kWh_list.append(float(info.get("supplied_to_load_kWh", 0.0)))
+        grid_charge_kWh_list.append(float(info.get("grid_charge_kWh", 0.0)))
 
         if terminated or truncated:
             print(f"Episode finished after {t + 1} steps")
@@ -159,7 +171,11 @@ def evaluate_rollout(model, env, n_steps=None, deterministic=True):
         "deg_cost": deg_cost_list,
         "penalty": penalty_list,
         "violated": violated_list,
+        "grid_import_load_kWh": grid_import_load_kWh_list,
+        "supplied_to_load_kWh": supplied_to_load_kWh_list,
+        "grid_charge_kWh": grid_charge_kWh_list,
     }
 
     return results
+
 
