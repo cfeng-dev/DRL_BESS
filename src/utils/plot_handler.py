@@ -47,12 +47,63 @@ def plot_bess_rollout(
     # -----------------------------
     # Determine x-axis
     # -----------------------------
+    n = len(soc_list)
     if timestamps is not None:
-        x = timestamps[:len(soc_list)]
+        x = timestamps[:n]
         xlabel = "Time"
     else:
-        x = np.arange(len(soc_list))
+        x = np.arange(n)
         xlabel = "Step"
+
+    # -----------------------------
+    # Precompute shared scaling for Demand + Peak shaving plot
+    #   - shared y-axis
+    #   - automatic unit switch (MWh ↔ kWh) when values are small
+    # -----------------------------
+    has_demand = demand_list is not None
+    has_flows = (grid_import_load_kWh_list is not None) or (supplied_to_load_kWh_list is not None)
+
+    demand_MWh = None
+    e_grid_MWh = None
+    e_bess_MWh = None
+
+    if has_demand:
+        demand_MWh = np.clip(np.asarray(demand_list[:n], dtype=np.float32), 0.0, None)
+
+    if has_flows:
+        if grid_import_load_kWh_list is not None:
+            e_grid_MWh = np.asarray(grid_import_load_kWh_list[:n], dtype=np.float32) / 1000.0
+        else:
+            e_grid_MWh = np.zeros(n, dtype=np.float32)
+
+        if supplied_to_load_kWh_list is not None:
+            e_bess_MWh = np.asarray(supplied_to_load_kWh_list[:n], dtype=np.float32) / 1000.0
+        else:
+            e_bess_MWh = np.zeros(n, dtype=np.float32)
+
+        e_grid_MWh = np.clip(e_grid_MWh, 0.0, None)
+        e_bess_MWh = np.clip(e_bess_MWh, 0.0, None)
+
+    # Determine common y_max in MWh (for matching y-axis)
+    # If both exist -> compare both. If only one exists -> use that one.
+    y_max_MWh = 0.0
+    if has_demand:
+        y_max_MWh = max(y_max_MWh, float(np.max(demand_MWh)))
+    if has_flows:
+        y_max_MWh = max(y_max_MWh, float(np.max(e_grid_MWh + e_bess_MWh)))
+
+    # add headroom
+    y_max_MWh *= 1.05 if y_max_MWh > 0 else 1.0
+
+    # Auto unit: if small in MWh -> show kWh
+    if y_max_MWh < 0.01:
+        scale = 1000.0
+        unit = "kWh"
+    else:
+        scale = 1.0
+        unit = "MWh"
+
+    y_max_scaled = y_max_MWh * scale
 
     # -----------------------------
     # Determine number of subplots
@@ -64,7 +115,7 @@ def plot_bess_rollout(
         n_rows += 1
 
     # Peak-shaving flow plot
-    if (grid_import_load_kWh_list is not None) or (supplied_to_load_kWh_list is not None):
+    if has_flows:
         n_rows += 1
 
     if action_list is not None:
@@ -90,8 +141,8 @@ def plot_bess_rollout(
 
     # --- Violation markers (optional) ---
     if violated_list is not None:
-        n = min(len(soc_list), len(violated_list))
-        violated_indices = [i for i in range(n) if violated_list[i]]
+        m = min(len(soc_list), len(violated_list))
+        violated_indices = [i for i in range(m) if violated_list[i]]
         violated_soc = [soc_list[i] for i in violated_indices]
 
         axs[row].scatter(
@@ -115,7 +166,7 @@ def plot_bess_rollout(
     # Price plot (optional)
     # ----------------------------------------------------------------------
     if price_list is not None:
-        axs[row].plot(x, price_list, label="Price", color="purple")
+        axs[row].plot(x, price_list[:n], label="Price", color="purple")
         axs[row].set_ylabel("Price [EUR/MWh]", fontsize=fontsize_base)
         axs[row].set_title("Electricity Price", fontsize=fontsize_base + 2, fontweight="bold")
         axs[row].grid(True)
@@ -125,11 +176,15 @@ def plot_bess_rollout(
 
     # ----------------------------------------------------------------------
     # Demand plot (optional)
+    #   - NOW uses the SAME unit + SAME y-axis as Peak Shaving plot
     # ----------------------------------------------------------------------
     if demand_list is not None:
-        axs[row].plot(x, demand_list, label="Demand", color="teal")
-        axs[row].set_ylabel("Demand [MWh]", fontsize=fontsize_base)
+        demand_scaled = demand_MWh * scale
+        axs[row].plot(x, demand_scaled, label="Demand", color="teal")
+
+        axs[row].set_ylabel(f"Demand per step [{unit}]", fontsize=fontsize_base)
         axs[row].set_title("Electricity Demand", fontsize=fontsize_base + 2, fontweight="bold")
+        axs[row].set_ylim(0.0, y_max_scaled)  # <<< match Peak Shaving plot
         axs[row].grid(True)
         axs[row].tick_params(axis="both", labelsize=fontsize_base)
         axs[row].legend(loc="upper right", fontsize=fontsize_base)
@@ -137,19 +192,43 @@ def plot_bess_rollout(
 
     # ----------------------------------------------------------------------
     # Grid vs BESS supply to office (Peak Shaving visualization)
-    # NOTE: Plot in MWh per step (to match demand_list)
+    # NOTE:
+    #   - Stacked area chart for clearer visualization (Grid + BESS)
+    #   - Shared y-axis scaling with Demand for direct comparison
+    #   - Automatic unit switch (MWh ↔ kWh) when values are very small
     # ----------------------------------------------------------------------
-    if (grid_import_load_kWh_list is not None) or (supplied_to_load_kWh_list is not None):
+    if has_flows:
+        e_grid = e_grid_MWh * scale
+        e_bess = e_bess_MWh * scale
+        total_supply = e_grid + e_bess
 
-        if grid_import_load_kWh_list is not None:
-            e_grid_MWh = np.array(grid_import_load_kWh_list) / 1000.0
-            axs[row].plot(x, e_grid_MWh, label="Grid → Office", linewidth=2)
+        axs[row].stackplot(
+            x,
+            e_grid,
+            e_bess,
+            labels=["Grid → Office", "BESS → Office"],
+            alpha=0.75,
+        )
 
-        if supplied_to_load_kWh_list is not None:
-            e_bess_MWh = np.array(supplied_to_load_kWh_list) / 1000.0
-            axs[row].plot(x, e_bess_MWh, label="BESS → Office", linewidth=2)
+        axs[row].plot(
+            x,
+            total_supply,
+            linestyle="--",
+            linewidth=2.0,
+            label="Total supply",
+        )
 
-        axs[row].set_ylabel("Energy per step [MWh]", fontsize=fontsize_base)
+        if demand_list is not None:
+            axs[row].plot(
+                x,
+                demand_scaled,
+                linestyle=":",
+                linewidth=2.5,
+                label="Demand",
+            )
+
+        axs[row].set_ylim(0.0, y_max_scaled)  # <<< shared y-axis
+        axs[row].set_ylabel(f"Energy per step [{unit}]", fontsize=fontsize_base)
         axs[row].set_title("Office Supply (Peak Shaving Effect)", fontsize=fontsize_base + 2, fontweight="bold")
         axs[row].grid(True)
         axs[row].tick_params(axis="both", labelsize=fontsize_base)
@@ -160,7 +239,7 @@ def plot_bess_rollout(
     # Action plot (optional)
     # ----------------------------------------------------------------------
     if action_list is not None:
-        axs[row].step(x, action_list, where="mid", label="Action", color="red")
+        axs[row].step(x, action_list[:n], where="mid", label="Action", color="red")
         axs[row].set_ylabel("Action [kW]", fontsize=fontsize_base)
         axs[row].set_title("Charge / Discharge Command", fontsize=fontsize_base + 2, fontweight="bold")
         axs[row].grid(True)
@@ -172,10 +251,10 @@ def plot_bess_rollout(
     # SoH plot (optional)
     # ----------------------------------------------------------------------
     if soh_list is not None:
-        axs[row].plot(x, soh_list, label="SoH", color="orange")
+        axs[row].plot(x, soh_list[:n], label="SoH", color="orange")
 
-        last_soh = float(soh_list[-1])
-        last_x = x[len(soh_list) - 1]
+        last_soh = float(soh_list[min(n, len(soh_list)) - 1])
+        last_x = x[min(n, len(soh_list)) - 1]
 
         axs[row].scatter([last_x], [last_soh], s=50, color="black", zorder=5)
         axs[row].annotate(
@@ -198,7 +277,7 @@ def plot_bess_rollout(
     # Reward plot (optional)
     # ----------------------------------------------------------------------
     if reward_list is not None:
-        axs[row].plot(x, reward_list, label="Reward", color="green")
+        axs[row].plot(x, reward_list[:n], label="Reward", color="green")
         axs[row].set_ylabel("Reward", fontsize=fontsize_base)
         axs[row].set_title("Reward", fontsize=fontsize_base + 2, fontweight="bold")
         axs[row].grid(True)
