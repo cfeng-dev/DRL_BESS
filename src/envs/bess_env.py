@@ -45,8 +45,14 @@ class BatteryEnv(gym.Env):
         Discrete mode:
             a ∈ {discrete_action_values[i] * P_max} in kW
 
-        a > 0 → charging from grid
-        a < 0 → discharging to grid
+        allow_grid_export=True  (OLD):
+            a > 0 → charging from grid
+            a < 0 → discharging to grid (sell)
+
+        allow_grid_export=False (PEAK SHAVING, NO EXPORT):
+            - discharge supplies OFFICE LOAD
+            - charging buys from grid
+            - remaining office load is imported from grid
     """
 
     metadata = {"render.modes": ["human"]}
@@ -57,7 +63,7 @@ class BatteryEnv(gym.Env):
         demand_series=None,                   # optional: demand profile (same length as price_series)
         timestamps=None,                      # optional list of datetime objects for time features
         *,
-        dt_hours: float = 0.25,               # simulation step length in hours
+        dt_hours: float = 0.25,               # simulation step length in hours (15min -> 0.25)
         capacity_kWh: float = 50.0,           # battery energy capacity in kWh
         p_max_kW: float = 10.0,               # max charge/discharge power in kW
         use_discrete_actions: bool = False,   # True → discrete action space (DQN); False → continuous (SAC/TD3)
@@ -76,11 +82,16 @@ class BatteryEnv(gym.Env):
         soh_min: float = 0.3,
         initial_soc: tuple = (0.40, 0.60),
         price_unit: str = "EUR_per_MWh",      # "EUR_per_MWh" or "EUR_per_kWh"
-        deg_cost_per_EFC: float = 0.1,        # degradation cost per equivalent full cycle (EUR)
+        deg_cost_per_EFC: float = 0.05,       # degradation cost per equivalent full cycle (EUR)
         soh_deg_per_EFC: float = 0.005,       # SoH loss per EFC
 
         penalty_soc_soft_k: float = 5.0,
         penalty_soc_soft_power: float = 2.0,
+
+        # Peak shaving penalty:
+        # - penalize high grid power (kW) to encourage smoothing / peak shaving
+        # - set to 0.0 to disable
+        peak_penalty_k: float = 1e-3,
 
         # Forecast controls
         use_price_forecast: bool = False,     # Include price forecast window
@@ -101,6 +112,14 @@ class BatteryEnv(gym.Env):
 
         scenario_id: int = 0,
         vary_scenario_per_episode: bool = True,
+
+        allow_grid_export: bool = True, # True: Arbitrage mode; False: Peak shaving mode (no export)
+
+        # Demand unit handling
+        # - "kW"            : demand_series is power
+        # - "kWh_per_step"  : demand_series is already energy per step
+        # - "MWh_per_step"  : demand_series is already energy per step in MWh  (SMARD CSV)
+        demand_unit: str = "MWh_per_step",
     ):
         super().__init__()
 
@@ -135,16 +154,17 @@ class BatteryEnv(gym.Env):
         self.random_start = bool(random_start)
         self.episode_len_steps = int(round(self.episode_days * 24.0 / self.dt))
 
+        self.peak_penalty_k = float(peak_penalty_k)
+
         # Forecast configuration
         self.use_price_forecast = bool(use_price_forecast)
         self.use_demand_forecast = bool(use_demand_forecast)
         self.forecast_horizon_hours = float(forecast_horizon_hours)
 
-        # NEW: expose uncertainty flags
+        # Expose uncertainty flags
         self.include_price_sigma = bool(include_price_sigma)
         self.include_demand_sigma = bool(include_demand_sigma)
 
-        # only meaningful if corresponding forecast is enabled
         if not self.use_price_forecast:
             self.include_price_sigma = False
         if not self.use_demand_forecast:
@@ -158,11 +178,37 @@ class BatteryEnv(gym.Env):
         else:
             self.forecast_horizon_steps = 0
 
-        # Discrete actions
-        if discrete_action_values is None:
-            discrete_action_values = np.linspace(-1.0, 1.0, 21).tolist()
+        # Peak shaving mode flags
+        self.allow_grid_export = bool(allow_grid_export)
+        if (not self.allow_grid_export) and (self.demand_series is None):
+            raise ValueError("Peak shaving (allow_grid_export=False) requires demand_series to be provided.")
 
-        self.discrete_action_values = np.array(discrete_action_values, dtype=np.float32) * self.p_max
+        # Demand unit
+        self.demand_unit = str(demand_unit)
+        if self.demand_unit not in ("kW", "kWh_per_step", "MWh_per_step"):
+            raise ValueError('demand_unit must be one of: "kW", "kWh_per_step", "MWh_per_step".')
+
+        # Discrete actions
+        # Arbitrage behavior (allow_grid_export=True):
+        #   - actions in [-Pmax, +Pmax]
+        # Peak shaving behavior (allow_grid_export=False):
+        #   - 21 actions split into:
+        #       0..9   : discharge-to-load (10 levels)
+        #       10     : idle
+        #       11..20 : charge-from-grid (10 levels)
+        if self.use_discrete:
+            if self.allow_grid_export:
+                if discrete_action_values is None:
+                    discrete_action_values = np.linspace(-1.0, 1.0, 21).tolist()
+                self.discrete_action_values = np.array(discrete_action_values, dtype=np.float32) * self.p_max
+            else:
+                self._discharge_levels = (np.linspace(0.1, 1.0, 10, dtype=np.float32) * self.p_max)
+                self._charge_levels = (np.linspace(0.1, 1.0, 10, dtype=np.float32) * self.p_max)
+                self._idle_index = 10
+        else:
+            if discrete_action_values is None:
+                discrete_action_values = np.linspace(-1.0, 1.0, 21).tolist()
+            self.discrete_action_values = np.array(discrete_action_values, dtype=np.float32) * self.p_max
 
         self.eta_c = float(eta_c)
         self.eta_d = float(eta_d)
@@ -190,7 +236,7 @@ class BatteryEnv(gym.Env):
         # RNG
         self.np_random, _ = gym.utils.seeding.np_random(random_seed)
 
-        # Normalization values
+        # Normalization values (keep in RAW units, consistent with obs)
         self._max_price = float(np.max(self.price_series)) if self.T > 0 else 1.0
         self._max_demand = None if self.demand_series is None else float(np.max(self.demand_series))
 
@@ -203,7 +249,7 @@ class BatteryEnv(gym.Env):
 
         self._forecast_z_price = None
         self._forecast_z_demand = None
-        self._episode_counter = 0  # used to vary scenario noise across resets (training)
+        self._episode_counter = 0
 
         # Sigma normalization (map sigma vectors into [0,1])
         self._sigma_price_max = 1.0
@@ -232,7 +278,9 @@ class BatteryEnv(gym.Env):
         # Action space
         # ----------------------------------------
         if self.use_discrete:
-            self.action_space = spaces.Discrete(len(self.discrete_action_values))
+            self.action_space = spaces.Discrete(
+                21 if (not self.allow_grid_export) else len(self.discrete_action_values)
+            )
         else:
             self.action_space = spaces.Box(
                 low=np.array([-self.p_max], dtype=np.float32),
@@ -258,7 +306,6 @@ class BatteryEnv(gym.Env):
         if self.use_demand_forecast and self.forecast_horizon_steps > 0:
             extra_dim += self.forecast_horizon_steps
 
-        # NEW: add sigma vectors as features
         if self.include_price_sigma and self.forecast_horizon_steps > 0 and (self.price_scenario_gen is not None):
             extra_dim += self.forecast_horizon_steps
         if self.include_demand_sigma and self.forecast_horizon_steps > 0 and (self.demand_scenario_gen is not None):
@@ -275,7 +322,6 @@ class BatteryEnv(gym.Env):
 
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
-        # Initialize internal state
         self.reset()
 
     # ----------------------------------------------------
@@ -287,7 +333,6 @@ class BatteryEnv(gym.Env):
 
         options = {} if options is None else dict(options)
 
-        # Episode length & start index
         max_episode_len = int(round(self.episode_days * 24.0 / self.dt))
         if self.T <= max_episode_len:
             self.episode_len_steps = self.T
@@ -302,6 +347,7 @@ class BatteryEnv(gym.Env):
 
         self.t = self.start_idx
         self.steps_in_episode = 0
+        self.steps_in_episode = 0
 
         self.soc = float(self.np_random.uniform(self.initial_soc_range[0], self.initial_soc_range[1]))
         self.soc = float(np.clip(self.soc, self.soc_hard_min, self.soc_hard_max))
@@ -311,9 +357,11 @@ class BatteryEnv(gym.Env):
         self._last_soc = self.soc
         self.last_action = 0.0
 
+        # Track last grid power for debugging/analysis (optional)
+        self._last_grid_total_kW = 0.0
+
         forced_episode_id = options.get("episode_id", None)
 
-        # Decide episode_id used by BOTH forecasts (for reproducible scenario pairing)
         if forced_episode_id is not None:
             episode_id = int(forced_episode_id)
         else:
@@ -322,7 +370,6 @@ class BatteryEnv(gym.Env):
             else:
                 episode_id = self.scenario_id
 
-        # Generate noise matrices
         self._forecast_z_price = None
         self._forecast_z_demand = None
 
@@ -338,7 +385,6 @@ class BatteryEnv(gym.Env):
                     episode_id=episode_id,
                 )
 
-        # increment AFTER using it
         self._episode_counter += 1
 
         price_true = float(self.price_series[self.t])
@@ -352,53 +398,150 @@ class BatteryEnv(gym.Env):
     # STEP
     # ----------------------------------------------------
     def step(self, action):
-        # 1) Interpret action
+        # 1) Interpret action → a_cmd_kW
         if self.use_discrete:
-            a = float(self.discrete_action_values[action])
+            if self.allow_grid_export:
+                a_cmd_kW = float(self.discrete_action_values[action])
+            else:
+                a_idx = int(action)
+                if a_idx == int(self._idle_index):
+                    a_cmd_kW = 0.0
+                elif a_idx < int(self._idle_index):
+                    a_cmd_kW = -float(self._discharge_levels[a_idx])
+                else:
+                    lvl = a_idx - (int(self._idle_index) + 1)
+                    a_cmd_kW = +float(self._charge_levels[lvl])
         else:
-            a = float(np.clip(action[0], -self.p_max, self.p_max))
+            a_cmd_kW = float(np.clip(action[0], -self.p_max, self.p_max))
 
         # 2) Fetch true values
         price_true = float(self.price_series[self.t])
         demand_true = None if self.demand_series is None else float(self.demand_series[self.t])
 
-        price_obs = price_true  # observed price (forecasts handled in obs)
+        price_obs = price_true
 
-        # 3) Battery SoC update with hard saturation
-        energy_cmd_kWh = a * self.dt
-
-        if energy_cmd_kWh >= 0.0:
-            delta_soc_cmd = (energy_cmd_kWh * self.eta_c) / self.capacity
+        # Price conversion (for costs)
+        if self.price_unit == "EUR_per_MWh":
+            price_per_kWh = price_true / 1000.0
         else:
-            delta_soc_cmd = (energy_cmd_kWh / self.eta_d) / self.capacity
+            price_per_kWh = price_true
 
-        soc_pre_cmd = self.soc + delta_soc_cmd
-
-        if energy_cmd_kWh >= 0.0:
-            soc_headroom = self.soc_hard_max - self.soc
-            energy_max_kWh = (soc_headroom * self.capacity) / max(self.eta_c, 1e-6)
-            energy_eff_kWh = float(np.clip(energy_cmd_kWh, 0.0, energy_max_kWh))
+        if demand_true is None:
+            demand_kWh = 0.0
         else:
-            soc_above_min = self.soc - self.soc_hard_min
-            energy_min_kWh = -(soc_above_min * self.capacity * self.eta_d)
-            energy_eff_kWh = float(np.clip(energy_cmd_kWh, energy_min_kWh, 0.0))
+            d = max(0.0, float(demand_true))
+            if self.demand_unit == "kW":
+                demand_kWh = d * self.dt                 # kW * h = kWh
+            elif self.demand_unit == "kWh_per_step":
+                demand_kWh = d                           # already kWh per step
+            else:  # "MWh_per_step"
+                demand_kWh = d * 1000.0                  # MWh -> kWh per step
 
-        if energy_eff_kWh >= 0.0:
-            delta_soc = (energy_eff_kWh * self.eta_c) / self.capacity
+        # 3) Commanded battery energy (kWh)
+        energy_cmd_kWh = a_cmd_kW * self.dt
+
+        supplied_to_load_kWh = 0.0
+        grid_import_load_kWh = 0.0
+        grid_charge_kWh = 0.0
+
+        # Peak penalty placeholders
+        grid_total_kW = 0.0
+        penalty_peak = 0.0
+
+        if self.allow_grid_export:
+            # ---------------- Arbitrage MODE (MARKET BUY/SELL) ----------------
+            if energy_cmd_kWh >= 0.0:
+                delta_soc_cmd = (energy_cmd_kWh * self.eta_c) / self.capacity
+            else:
+                delta_soc_cmd = (energy_cmd_kWh / self.eta_d) / self.capacity
+
+            soc_pre_cmd = self.soc + delta_soc_cmd
+
+            if energy_cmd_kWh >= 0.0:
+                soc_headroom = self.soc_hard_max - self.soc
+                energy_max_kWh = (soc_headroom * self.capacity) / max(self.eta_c, 1e-6)
+                energy_eff_kWh = float(np.clip(energy_cmd_kWh, 0.0, energy_max_kWh))
+            else:
+                soc_above_min = self.soc - self.soc_hard_min
+                energy_min_kWh = -(soc_above_min * self.capacity * self.eta_d)
+                energy_eff_kWh = float(np.clip(energy_cmd_kWh, energy_min_kWh, 0.0))
+
+            if energy_eff_kWh >= 0.0:
+                delta_soc = (energy_eff_kWh * self.eta_c) / self.capacity
+            else:
+                delta_soc = (energy_eff_kWh / self.eta_d) / self.capacity
+
+            self.soc = float(np.clip(self.soc + delta_soc, self.soc_hard_min, self.soc_hard_max))
+
+            below = max(0.0, self.soc_soft_min - self.soc)
+            above = max(0.0, self.soc - self.soc_soft_max)
+            soft_violation = below + above
+
+            penalty_soc_soft = -self.penalty_soc_soft_k * (
+                (below ** self.penalty_soc_soft_power) + (above ** self.penalty_soc_soft_power)
+            )
+
+            violated_soft_cmd = (soc_pre_cmd < self.soc_soft_min) or (soc_pre_cmd > self.soc_soft_max)
+
+            revenue_eur = -price_per_kWh * energy_eff_kWh
+
         else:
-            delta_soc = (energy_eff_kWh / self.eta_d) / self.capacity
+            # ---------------- PEAK SHAVING MODE (MARKET BUY, but no SELL) ----------------
+            # Charge   : grid -> bess
+            # Discharge: bess -> load
+            soc_pre_cmd = self.soc
 
-        self.soc = float(np.clip(self.soc + delta_soc, self.soc_hard_min, self.soc_hard_max))
+            if energy_cmd_kWh > 0.0:
+                # CHARGE
+                soc_headroom = self.soc_hard_max - self.soc
+                energy_to_batt_max_kWh = soc_headroom * self.capacity
 
-        below = max(0.0, self.soc_soft_min - self.soc)
-        above = max(0.0, self.soc - self.soc_soft_max)
-        soft_violation = below + above
+                # command is grid-energy; stored energy is eta_c * grid-energy
+                energy_to_batt_cmd_kWh = energy_cmd_kWh * self.eta_c
+                energy_to_batt_kWh = float(np.clip(energy_to_batt_cmd_kWh, 0.0, energy_to_batt_max_kWh))
 
-        penalty_soc_soft = -self.penalty_soc_soft_k * (
-            (below ** self.penalty_soc_soft_power) + (above ** self.penalty_soc_soft_power)
-        )
+                delta_soc = energy_to_batt_kWh / self.capacity
+                self.soc = float(np.clip(self.soc + delta_soc, self.soc_hard_min, self.soc_hard_max))
 
-        violated_soft_cmd = (soc_pre_cmd < self.soc_soft_min) or (soc_pre_cmd > self.soc_soft_max)
+                # grid energy actually used
+                grid_charge_kWh = energy_to_batt_kWh / max(self.eta_c, 1e-6)
+
+            elif energy_cmd_kWh < 0.0:
+                # DISCHARGE to load (no selling)
+                req_deliver_kWh = min(abs(energy_cmd_kWh), demand_kWh)
+
+                energy_available_from_batt_kWh = (self.soc - self.soc_hard_min) * self.capacity
+                max_deliver_kWh = energy_available_from_batt_kWh * self.eta_d
+
+                supplied_to_load_kWh = float(np.clip(req_deliver_kWh, 0.0, max_deliver_kWh))
+
+                energy_from_batt_kWh = supplied_to_load_kWh / max(self.eta_d, 1e-6)
+                delta_soc = -energy_from_batt_kWh / self.capacity
+                self.soc = float(np.clip(self.soc + delta_soc, self.soc_hard_min, self.soc_hard_max))
+
+            # remaining load from grid
+            grid_import_load_kWh = max(0.0, demand_kWh - supplied_to_load_kWh)
+
+            below = max(0.0, self.soc_soft_min - self.soc)
+            above = max(0.0, self.soc - self.soc_soft_max)
+            soft_violation = below + above
+
+            penalty_soc_soft = -self.penalty_soc_soft_k * (
+                (below ** self.penalty_soc_soft_power) + (above ** self.penalty_soc_soft_power)
+            )
+
+            violated_soft_cmd = (self.soc < self.soc_soft_min) or (self.soc > self.soc_soft_max)
+
+            total_grid_kWh = grid_import_load_kWh + grid_charge_kWh
+            revenue_eur = -price_per_kWh * total_grid_kWh
+
+            # Peak shaving penalty:
+            # Convert grid energy per step back into grid power (kW), then penalize peaks.
+            # This encourages the agent to "smooth" grid import (and not charge during peaks).
+            grid_total_kW = float(total_grid_kWh / max(self.dt, 1e-9))
+            penalty_peak = -self.peak_penalty_k * (grid_total_kW ** 2)
+
+            self._last_grid_total_kW = grid_total_kW
 
         # 4) Degradation (simple EFC model)
         delta_soc_actual = abs(self.soc - self._last_soc)
@@ -408,23 +551,14 @@ class BatteryEnv(gym.Env):
         self._last_soc = self.soc
 
         deg_cost_eur = efc_step * self.deg_cost_per_EFC
-
         self.soh = max(self.soh_min, self.soh - self.soh_deg_per_EFC * efc_step)
 
-        # 5) Revenue
-        if self.price_unit == "EUR_per_MWh":
-            price_per_kWh = price_true / 1000.0
-        else:
-            price_per_kWh = price_true
-
-        revenue_eur = -price_per_kWh * energy_eff_kWh
-
-        # 6) Reward
+        # 5) Reward
         penalty = float(penalty_soc_soft)
-        reward = float(revenue_eur - deg_cost_eur + penalty)
+        reward = float(revenue_eur - deg_cost_eur + penalty + float(penalty_peak))
 
-        # 7) Advance
-        self.last_action = a
+        # 6) Advance
+        self.last_action = a_cmd_kW
         self.t += 1
         self.steps_in_episode += 1
 
@@ -439,19 +573,29 @@ class BatteryEnv(gym.Env):
         info = {
             "price_true": price_true,
             "demand_true": demand_true,
-            "revenue_eur": revenue_eur,
-            "deg_cost_eur": deg_cost_eur,
-            "penalty_eur": penalty,
+            "demand_kWh_step": float(demand_kWh),
+            "revenue_eur": float(revenue_eur),
+            "deg_cost_eur": float(deg_cost_eur),
+            "penalty_eur": float(penalty),
             "penalty_soc_soft": float(penalty_soc_soft),
             "soft_violation": float(soft_violation),
             "violated_soft_cmd": bool(violated_soft_cmd),
-            "efc_cum": self._efc_acc,
-            "energy_cmd_kWh": energy_cmd_kWh,
-            "energy_eff_kWh": energy_eff_kWh,
-            "p_kw": a,
+            "efc_cum": float(self._efc_acc),
+            "energy_cmd_kWh": float(energy_cmd_kWh),
+            "p_kw": float(a_cmd_kW),
             "soc": float(self.soc),
             "soh": float(self.soh),
+            "grid_total_kW": float(grid_total_kW),
+            "penalty_peak": float(penalty_peak),
         }
+
+        if not self.allow_grid_export:
+            info.update({
+                "supplied_to_load_kWh": float(supplied_to_load_kWh),
+                "grid_import_load_kWh": float(grid_import_load_kWh),
+                "grid_charge_kWh": float(grid_charge_kWh),
+                "grid_total_kWh": float(grid_import_load_kWh + grid_charge_kWh),
+            })
 
         return obs, reward, terminated, truncated, info
 
@@ -489,12 +633,8 @@ class BatteryEnv(gym.Env):
         """
         Construct normalized observation vector.
 
-        Forecast windows:
-            - price forecast: relative sigma per horizon -> absolute noise via |p_true|
-            - demand forecast: multiplicative relative noise
-
-        NEW:
-            - appends sigma vectors (normalized to [0,1]) if include_*_sigma is enabled
+        NOTE: demand_norm is based on RAW demand_series units.
+              (So if your demand is MWh_per_step, it is normalized in that space.)
         """
         sin_tod, cos_tod, sin_doy, cos_doy = self._get_time_features(self.t)
 
@@ -519,10 +659,9 @@ class BatteryEnv(gym.Env):
             last_action_norm,
         ]
 
-        # Noise row index for the current step inside the episode
         step_in_ep = max(0, min(self.steps_in_episode, max(0, self.episode_len_steps - 1)))
 
-        # Append future price window (if enabled)
+        # Price forecast window
         if self.use_price_forecast and self.forecast_horizon_steps > 0:
             prices_future = []
             for k in range(1, self.forecast_horizon_steps + 1):
@@ -530,9 +669,9 @@ class BatteryEnv(gym.Env):
                 p_true_future = float(self.price_series[idx])
 
                 if self._forecast_z_price is not None and self.price_scenario_gen is not None:
-                    eps = float(self._forecast_z_price[step_in_ep, k - 1])  # ~ N(0,1)
+                    eps = float(self._forecast_z_price[step_in_ep, k - 1])
                     sigma_rel = float(self.price_scenario_gen.sigma[k - 1])
-                    sigma_abs = sigma_rel * max(abs(p_true_future), 1e-6)  # avoid 0-scale
+                    sigma_abs = sigma_rel * max(abs(p_true_future), 1e-6)
                     p_used_future = p_true_future + eps * sigma_abs
                 else:
                     p_used_future = p_true_future
@@ -542,7 +681,7 @@ class BatteryEnv(gym.Env):
 
             obs_components.extend(prices_future)
 
-        # Append future demand window (if enabled)
+        # Demand forecast window
         if self.use_demand_forecast and self.forecast_horizon_steps > 0:
             demands_future = []
             for k in range(1, self.forecast_horizon_steps + 1):
@@ -550,10 +689,10 @@ class BatteryEnv(gym.Env):
                 d_true_future = float(self.demand_series[idx])
 
                 if self._forecast_z_demand is not None and self.demand_scenario_gen is not None:
-                    eps = float(self._forecast_z_demand[step_in_ep, k - 1])  # ~ N(0,1)
+                    eps = float(self._forecast_z_demand[step_in_ep, k - 1])
                     sigma_rel = float(self.demand_scenario_gen.sigma[k - 1])
                     d_used_future = d_true_future * (1.0 + eps * sigma_rel)
-                    d_used_future = max(d_used_future, 0.0)  # demand can't be negative
+                    d_used_future = max(d_used_future, 0.0)
                 else:
                     d_used_future = d_true_future
 
@@ -562,9 +701,7 @@ class BatteryEnv(gym.Env):
 
             obs_components.extend(demands_future)
 
-        # ----------------------------------------------------
-        # Append sigma (uncertainty) vectors (if enabled)
-        # ----------------------------------------------------
+        # Sigma vectors
         if (
             self.include_price_sigma
             and self.use_price_forecast

@@ -10,12 +10,11 @@ def plot_bess_rollout(
     action_list=None,
     timestamps=None,
     violated_list=None,
+    grid_import_load_kWh_list=None,
+    supplied_to_load_kWh_list=None,
+    dt_hours: float = 0.25,
     figsize=(14, 24),
     fontsize_base=14, # Global font size control
-
-    grid_import_load_kWh_list=None,   # office load supplied by grid
-    supplied_to_load_kWh_list=None,   # office load supplied by BESS
-    dt_hours: float = 0.25,
 ):
     """
     Generic plotting function for BESS environment rollouts.
@@ -176,13 +175,12 @@ def plot_bess_rollout(
 
     # ----------------------------------------------------------------------
     # Demand plot (optional)
-    #   - NOW uses the SAME unit + SAME y-axis as Peak Shaving plot
     # ----------------------------------------------------------------------
     if demand_list is not None:
         demand_scaled = demand_MWh * scale
         axs[row].plot(x, demand_scaled, label="Demand", color="teal")
 
-        axs[row].set_ylabel(f"Demand per step [{unit}]", fontsize=fontsize_base)
+        axs[row].set_ylabel(f"Demand [{unit}]", fontsize=fontsize_base)
         axs[row].set_title("Electricity Demand", fontsize=fontsize_base + 2, fontweight="bold")
         axs[row].set_ylim(0.0, y_max_scaled)  # <<< match Peak Shaving plot
         axs[row].grid(True)
@@ -192,10 +190,6 @@ def plot_bess_rollout(
 
     # ----------------------------------------------------------------------
     # Grid vs BESS supply to office (Peak Shaving visualization)
-    # NOTE:
-    #   - Stacked area chart for clearer visualization (Grid + BESS)
-    #   - Shared y-axis scaling with Demand for direct comparison
-    #   - Automatic unit switch (MWh ↔ kWh) when values are very small
     # ----------------------------------------------------------------------
     if has_flows:
         e_grid = e_grid_MWh * scale
@@ -206,30 +200,15 @@ def plot_bess_rollout(
             x,
             e_grid,
             e_bess,
-            labels=["Grid → Office", "BESS → Office"],
+            labels=["Grid → Load", "BESS → Load"],
             alpha=0.75,
         )
 
-        axs[row].plot(
-            x,
-            total_supply,
-            linestyle="--",
-            linewidth=2.0,
-            label="Total supply",
-        )
 
-        if demand_list is not None:
-            axs[row].plot(
-                x,
-                demand_scaled,
-                linestyle=":",
-                linewidth=2.5,
-                label="Demand",
-            )
 
-        axs[row].set_ylim(0.0, y_max_scaled)  # <<< shared y-axis
-        axs[row].set_ylabel(f"Energy per step [{unit}]", fontsize=fontsize_base)
-        axs[row].set_title("Office Supply (Peak Shaving Effect)", fontsize=fontsize_base + 2, fontweight="bold")
+        axs[row].set_ylim(0.0, y_max_scaled)
+        axs[row].set_ylabel(f"Demand [{unit}]", fontsize=fontsize_base)
+        axs[row].set_title("Load Supply (Peak Shaving Effect)", fontsize=fontsize_base + 2, fontweight="bold")
         axs[row].grid(True)
         axs[row].tick_params(axis="both", labelsize=fontsize_base)
         axs[row].legend(loc="upper right", fontsize=fontsize_base)
