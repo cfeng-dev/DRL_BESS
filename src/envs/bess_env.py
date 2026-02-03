@@ -88,13 +88,8 @@ class BatteryEnv(gym.Env):
         penalty_soc_soft_k: float = 5.0,
         penalty_soc_soft_power: float = 2.0,
 
-        # Peak shaving penalty:
-        # - penalize high grid power (kW) to encourage smoothing / peak shaving
-        # - set to 0.0 to disable
-        peak_penalty_k: float = 1e-3,
-
         # Demand-cap penalty (Peak shaving on OFFICE import)
-        grid_import_cap_kWh: float = 1.0,      # cap for grid import that serves load (kWh per step)
+        grid_import_cap_kWh: float = 1.2,      # cap for grid import that serves load (kWh per step)
         demand_cap_penalty_k: float = 50.0,    # strength of penalty
         demand_cap_penalty_power: float = 2.0, # exponent (2=quadratic, 3=cubic, ...)
 
@@ -158,8 +153,6 @@ class BatteryEnv(gym.Env):
         self.episode_days = float(episode_days)
         self.random_start = bool(random_start)
         self.episode_len_steps = int(round(self.episode_days * 24.0 / self.dt))
-
-        self.peak_penalty_k = float(peak_penalty_k)
 
         self.grid_import_cap_kWh = float(grid_import_cap_kWh)
         self.demand_cap_penalty_k = float(demand_cap_penalty_k)
@@ -453,10 +446,6 @@ class BatteryEnv(gym.Env):
         grid_import_load_kWh = 0.0
         grid_charge_kWh = 0.0
 
-        # Peak penalty placeholders
-        grid_total_kW = 0.0
-        penalty_peak = 0.0
-
         penalty_demand_cap = 0.0
         exceed_kWh = 0.0
 
@@ -531,7 +520,7 @@ class BatteryEnv(gym.Env):
                 delta_soc = -energy_from_batt_kWh / self.capacity
                 self.soc = float(np.clip(self.soc + delta_soc, self.soc_hard_min, self.soc_hard_max))
 
-            # remaining load from grid
+            # remaining office load is imported from grid
             grid_import_load_kWh = max(0.0, demand_kWh - supplied_to_load_kWh)
 
             exceed_kWh = max(0.0, grid_import_load_kWh - self.grid_import_cap_kWh)
@@ -550,13 +539,7 @@ class BatteryEnv(gym.Env):
             total_grid_kWh = grid_import_load_kWh + grid_charge_kWh
             revenue_eur = -price_per_kWh * total_grid_kWh
 
-            # Peak shaving penalty:
-            # Convert grid energy per step back into grid power (kW), then penalize peaks.
-            # This encourages the agent to "smooth" grid import (and not charge during peaks).
-            grid_total_kW = float(total_grid_kWh / max(self.dt, 1e-9))
-            penalty_peak = -self.peak_penalty_k * (grid_total_kW ** 2)
-
-            self._last_grid_total_kW = grid_total_kW
+            self._last_grid_total_kW = float(total_grid_kWh / max(self.dt, 1e-9))
 
         # 4) Degradation (simple EFC model)
         delta_soc_actual = abs(self.soc - self._last_soc)
@@ -570,7 +553,7 @@ class BatteryEnv(gym.Env):
 
         # 5) Reward
         penalty = float(penalty_soc_soft)
-        reward = float(revenue_eur - deg_cost_eur + penalty + float(penalty_peak) + float(penalty_demand_cap))
+        reward = float(revenue_eur - deg_cost_eur + penalty + float(penalty_demand_cap))
 
         # 6) Advance
         self.last_action = a_cmd_kW
@@ -600,8 +583,7 @@ class BatteryEnv(gym.Env):
             "p_kw": float(a_cmd_kW),
             "soc": float(self.soc),
             "soh": float(self.soh),
-            "grid_total_kW": float(grid_total_kW),
-            "penalty_peak": float(penalty_peak),
+            "grid_total_kW": float(self._last_grid_total_kW),
             "grid_import_cap_kWh": float(self.grid_import_cap_kWh),
             "exceed_kWh": float(exceed_kWh),
             "penalty_demand_cap": float(penalty_demand_cap),
