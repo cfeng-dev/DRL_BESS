@@ -89,7 +89,6 @@ class BatteryEnv(gym.Env):
         penalty_soc_soft_power: float = 2.0,
 
         # Demand-cap penalty (Peak shaving on OFFICE import)
-        grid_import_cap_kWh: float = 1.2,      # cap for grid import that serves load (kWh per step)
         demand_cap_penalty_k: float = 50.0,    # strength of penalty
         demand_cap_penalty_power: float = 2.0, # exponent (2=quadratic, 3=cubic, ...)
 
@@ -154,7 +153,6 @@ class BatteryEnv(gym.Env):
         self.random_start = bool(random_start)
         self.episode_len_steps = int(round(self.episode_days * 24.0 / self.dt))
 
-        self.grid_import_cap_kWh = float(grid_import_cap_kWh)
         self.demand_cap_penalty_k = float(demand_cap_penalty_k)
         self.demand_cap_penalty_power = float(demand_cap_penalty_power)
 
@@ -241,6 +239,23 @@ class BatteryEnv(gym.Env):
         # Normalization values (keep in RAW units, consistent with obs)
         self._max_price = float(np.max(self.price_series)) if self.T > 0 else 1.0
         self._max_demand = None if self.demand_series is None else float(np.max(self.demand_series))
+
+        self._price_peak_threshold = float(np.quantile(self.price_series, 0.8)) if self.T > 0 else 0.0
+
+        if self.demand_series is None or self.T <= 0:
+            self._grid_import_cap_offpeak_kWh = 0.0
+            self._grid_import_cap_peak_kWh = 0.0
+        else:
+            d = np.maximum(self.demand_series.astype(np.float32), 0.0)
+            if self.demand_unit == "kW":
+                demand_kWh_series = d * float(self.dt)
+            elif self.demand_unit == "kWh_per_step":
+                demand_kWh_series = d
+            else:  # "MWh_per_step"
+                demand_kWh_series = d * 1000.0
+
+            self._grid_import_cap_offpeak_kWh = float(np.quantile(demand_kWh_series, 0.6))
+            self._grid_import_cap_peak_kWh = float(np.quantile(demand_kWh_series, 0.3))
 
         # Scenario generators
         self.price_scenario_gen = price_scenario_gen
@@ -448,6 +463,7 @@ class BatteryEnv(gym.Env):
 
         penalty_demand_cap = 0.0
         exceed_kWh = 0.0
+        cap_now_kWh = float(self._grid_import_cap_offpeak_kWh)
 
         if self.allow_grid_export:
             # ---------------- Arbitrage MODE (MARKET BUY/SELL) ----------------
@@ -523,7 +539,12 @@ class BatteryEnv(gym.Env):
             # remaining office load is imported from grid
             grid_import_load_kWh = max(0.0, demand_kWh - supplied_to_load_kWh)
 
-            exceed_kWh = max(0.0, grid_import_load_kWh - self.grid_import_cap_kWh)
+            if price_true >= self._price_peak_threshold:
+                cap_now_kWh = float(self._grid_import_cap_peak_kWh)
+            else:
+                cap_now_kWh = float(self._grid_import_cap_offpeak_kWh)
+
+            exceed_kWh = max(0.0, grid_import_load_kWh - cap_now_kWh)
             penalty_demand_cap = -self.demand_cap_penalty_k * (exceed_kWh ** self.demand_cap_penalty_power)
 
             below = max(0.0, self.soc_soft_min - self.soc)
@@ -584,7 +605,7 @@ class BatteryEnv(gym.Env):
             "soc": float(self.soc),
             "soh": float(self.soh),
             "grid_total_kW": float(self._last_grid_total_kW),
-            "grid_import_cap_kWh": float(self.grid_import_cap_kWh),
+            "grid_import_cap_kWh": float(cap_now_kWh),
             "exceed_kWh": float(exceed_kWh),
             "penalty_demand_cap": float(penalty_demand_cap),
         }
@@ -595,6 +616,7 @@ class BatteryEnv(gym.Env):
                 "grid_import_load_kWh": float(grid_import_load_kWh),
                 "grid_charge_kWh": float(grid_charge_kWh),
                 "grid_total_kWh": float(grid_import_load_kWh + grid_charge_kWh),
+                "price_peak_threshold": float(self._price_peak_threshold),
             })
 
         return obs, reward, terminated, truncated, info
