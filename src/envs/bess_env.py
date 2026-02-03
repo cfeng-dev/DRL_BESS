@@ -45,7 +45,7 @@ class BatteryEnv(gym.Env):
         Discrete mode:
             a ∈ {discrete_action_values[i] * P_max} in kW
 
-        allow_grid_export=True  (OLD):
+        allow_grid_export=True (Arbitrage):
             a > 0 → charging from grid
             a < 0 → discharging to grid (sell)
 
@@ -92,6 +92,11 @@ class BatteryEnv(gym.Env):
         # - penalize high grid power (kW) to encourage smoothing / peak shaving
         # - set to 0.0 to disable
         peak_penalty_k: float = 1e-3,
+
+        # Demand-cap penalty (Peak shaving on OFFICE import)
+        grid_import_cap_kWh: float = 1.0,      # cap for grid import that serves load (kWh per step)
+        demand_cap_penalty_k: float = 50.0,    # strength of penalty
+        demand_cap_penalty_power: float = 2.0, # exponent (2=quadratic, 3=cubic, ...)
 
         # Forecast controls
         use_price_forecast: bool = False,     # Include price forecast window
@@ -155,6 +160,10 @@ class BatteryEnv(gym.Env):
         self.episode_len_steps = int(round(self.episode_days * 24.0 / self.dt))
 
         self.peak_penalty_k = float(peak_penalty_k)
+
+        self.grid_import_cap_kWh = float(grid_import_cap_kWh)
+        self.demand_cap_penalty_k = float(demand_cap_penalty_k)
+        self.demand_cap_penalty_power = float(demand_cap_penalty_power)
 
         # Forecast configuration
         self.use_price_forecast = bool(use_price_forecast)
@@ -448,6 +457,9 @@ class BatteryEnv(gym.Env):
         grid_total_kW = 0.0
         penalty_peak = 0.0
 
+        penalty_demand_cap = 0.0
+        exceed_kWh = 0.0
+
         if self.allow_grid_export:
             # ---------------- Arbitrage MODE (MARKET BUY/SELL) ----------------
             if energy_cmd_kWh >= 0.0:
@@ -522,6 +534,9 @@ class BatteryEnv(gym.Env):
             # remaining load from grid
             grid_import_load_kWh = max(0.0, demand_kWh - supplied_to_load_kWh)
 
+            exceed_kWh = max(0.0, grid_import_load_kWh - self.grid_import_cap_kWh)
+            penalty_demand_cap = -self.demand_cap_penalty_k * (exceed_kWh ** self.demand_cap_penalty_power)
+
             below = max(0.0, self.soc_soft_min - self.soc)
             above = max(0.0, self.soc - self.soc_soft_max)
             soft_violation = below + above
@@ -555,7 +570,7 @@ class BatteryEnv(gym.Env):
 
         # 5) Reward
         penalty = float(penalty_soc_soft)
-        reward = float(revenue_eur - deg_cost_eur + penalty + float(penalty_peak))
+        reward = float(revenue_eur - deg_cost_eur + penalty + float(penalty_peak) + float(penalty_demand_cap))
 
         # 6) Advance
         self.last_action = a_cmd_kW
@@ -587,6 +602,9 @@ class BatteryEnv(gym.Env):
             "soh": float(self.soh),
             "grid_total_kW": float(grid_total_kW),
             "penalty_peak": float(penalty_peak),
+            "grid_import_cap_kWh": float(self.grid_import_cap_kWh),
+            "exceed_kWh": float(exceed_kWh),
+            "penalty_demand_cap": float(penalty_demand_cap),
         }
 
         if not self.allow_grid_export:
