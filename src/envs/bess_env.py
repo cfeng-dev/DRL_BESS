@@ -75,18 +75,11 @@ class BatteryEnv(gym.Env):
         soc_hard_min: float = 0.0,
         soc_hard_max: float = 1.0,
 
-        # Soft comfort band (penalty outside)
-        soc_soft_min: float = 0.0,
-        soc_soft_max: float = 1.0,
-
         soh_min: float = 0.3,
         initial_soc: tuple = (0.40, 0.60),
         price_unit: str = "EUR_per_MWh",      # "EUR_per_MWh" or "EUR_per_kWh"
         deg_cost_per_EFC: float = 0.05,       # degradation cost per equivalent full cycle (EUR)
         soh_deg_per_EFC: float = 0.005,       # SoH loss per EFC
-
-        penalty_soc_soft_k: float = 5.0,
-        penalty_soc_soft_power: float = 2.0,
 
         # Demand-cap penalty (Peak shaving on OFFICE import)
         demand_cap_penalty_k: float = 50.0,    # strength of penalty
@@ -216,22 +209,15 @@ class BatteryEnv(gym.Env):
         # SoC constraints
         self.soc_hard_min = float(soc_hard_min)
         self.soc_hard_max = float(soc_hard_max)
-        self.soc_soft_min = float(soc_soft_min)
-        self.soc_soft_max = float(soc_soft_max)
 
         if not (0.0 <= self.soc_hard_min < self.soc_hard_max <= 1.0):
             raise ValueError("Hard SoC bounds must satisfy 0 <= soc_hard_min < soc_hard_max <= 1.")
-        if not (self.soc_hard_min <= self.soc_soft_min < self.soc_soft_max <= self.soc_hard_max):
-            raise ValueError("Soft SoC bounds must lie within hard bounds and satisfy soc_soft_min < soc_soft_max.")
 
         self.soh_min = float(soh_min)
         self.initial_soc_range = (float(initial_soc[0]), float(initial_soc[1]))
         self.price_unit = price_unit
         self.deg_cost_per_EFC = float(deg_cost_per_EFC)
         self.soh_deg_per_EFC = float(soh_deg_per_EFC)
-
-        self.penalty_soc_soft_k = float(penalty_soc_soft_k)
-        self.penalty_soc_soft_power = float(penalty_soc_soft_power)
 
         # RNG
         self.np_random, _ = gym.utils.seeding.np_random(random_seed)
@@ -490,15 +476,7 @@ class BatteryEnv(gym.Env):
 
             self.soc = float(np.clip(self.soc + delta_soc, self.soc_hard_min, self.soc_hard_max))
 
-            below = max(0.0, self.soc_soft_min - self.soc)
-            above = max(0.0, self.soc - self.soc_soft_max)
-            soft_violation = below + above
-
-            penalty_soc_soft = -self.penalty_soc_soft_k * (
-                (below ** self.penalty_soc_soft_power) + (above ** self.penalty_soc_soft_power)
-            )
-
-            violated_soft_cmd = (soc_pre_cmd < self.soc_soft_min) or (soc_pre_cmd > self.soc_soft_max)
+            violated_soft_cmd = False
 
             revenue_eur = -price_per_kWh * energy_eff_kWh
 
@@ -547,15 +525,7 @@ class BatteryEnv(gym.Env):
             exceed_kWh = max(0.0, grid_import_load_kWh - cap_now_kWh)
             penalty_demand_cap = -self.demand_cap_penalty_k * (exceed_kWh ** self.demand_cap_penalty_power)
 
-            below = max(0.0, self.soc_soft_min - self.soc)
-            above = max(0.0, self.soc - self.soc_soft_max)
-            soft_violation = below + above
-
-            penalty_soc_soft = -self.penalty_soc_soft_k * (
-                (below ** self.penalty_soc_soft_power) + (above ** self.penalty_soc_soft_power)
-            )
-
-            violated_soft_cmd = (self.soc < self.soc_soft_min) or (self.soc > self.soc_soft_max)
+            violated_soft_cmd = False
 
             total_grid_kWh = grid_import_load_kWh + grid_charge_kWh
             revenue_eur = -price_per_kWh * total_grid_kWh
@@ -573,8 +543,7 @@ class BatteryEnv(gym.Env):
         self.soh = max(self.soh_min, self.soh - self.soh_deg_per_EFC * efc_step)
 
         # 5) Reward
-        penalty = float(penalty_soc_soft)
-        reward = float(revenue_eur - deg_cost_eur + penalty + float(penalty_demand_cap))
+        reward = float(revenue_eur - deg_cost_eur + float(penalty_demand_cap))
 
         # 6) Advance
         self.last_action = a_cmd_kW
@@ -595,10 +564,6 @@ class BatteryEnv(gym.Env):
             "demand_kWh_step": float(demand_kWh),
             "revenue_eur": float(revenue_eur),
             "deg_cost_eur": float(deg_cost_eur),
-            "penalty_eur": float(penalty),
-            "penalty_soc_soft": float(penalty_soc_soft),
-            "soft_violation": float(soft_violation),
-            "violated_soft_cmd": bool(violated_soft_cmd),
             "efc_cum": float(self._efc_acc),
             "energy_cmd_kWh": float(energy_cmd_kWh),
             "p_kw": float(a_cmd_kW),
