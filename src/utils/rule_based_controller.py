@@ -28,12 +28,8 @@ class RuleBasedController:
         soc_max: float = 1.0,
         q_low: float = 20.0,
         q_high: float = 80.0,
-        deadband: float = 0.05,
+        deadband: float = 0.0,
         eps: float = 0.00,
-        # Choose which env bounds to use for lookahead safety check
-        # "hard" = env physical hard bounds (recommended for fair comparison)
-        # "soft" = env comfort band bounds (discourage boundary operation)
-        lookahead_bounds: str = "soft",
     ):
         """
         Parameters
@@ -66,11 +62,6 @@ class RuleBasedController:
         eps : float
             Safety margin for SoC bounds. The controller will internally use
             [soc_min + eps, soc_max - eps] to stay away from limits.
-
-        lookahead_bounds : str
-            Which environment bounds to use for the 1-step lookahead safety check:
-            - "hard": env.soc_hard_min/max or env.soc_min/max (backward compatible)
-            - "soft": env.soc_soft_min/max if available (else fallback to hard)
         """
         self.env = env
         self.use_observed_price = use_observed_price
@@ -79,10 +70,6 @@ class RuleBasedController:
         self.soc_max = float(soc_max)
         self.deadband = float(deadband)
         self.eps = float(eps)
-        self.lookahead_bounds = str(lookahead_bounds).lower().strip()
-
-        if self.lookahead_bounds not in ("hard", "soft"):
-            raise ValueError("lookahead_bounds must be 'hard' or 'soft'.")
 
         # Internal "safe" band used by the controller (override logic)
         self.soc_min_safe = self.soc_min + self.eps
@@ -135,31 +122,26 @@ class RuleBasedController:
         (soc_min_env, soc_max_env) : tuple[float, float]
             Bounds used for the lookahead safety check.
         """
-        # Old env API: soc_min/soc_max
-        has_old = hasattr(self.env, "soc_min") and hasattr(self.env, "soc_max")
+        # soc_min/soc_max
+        has_soc_min_max = hasattr(self.env, "soc_min") and hasattr(self.env, "soc_max")
 
-        # New env API: hard + soft bounds
-        has_hard = hasattr(self.env, "soc_hard_min") and hasattr(self.env, "soc_hard_max")
-        has_soft = hasattr(self.env, "soc_soft_min") and hasattr(self.env, "soc_soft_max")
-
-        if self.lookahead_bounds == "soft" and has_soft:
-            soc_min_env = float(self.env.soc_soft_min)
-            soc_max_env = float(self.env.soc_soft_max)
-            return soc_min_env + self.eps, soc_max_env - self.eps
-
-        # default/fallback: hard bounds (preferred for fair comparison)
-        if has_hard:
-            soc_min_env = float(self.env.soc_hard_min)
-            soc_max_env = float(self.env.soc_hard_max)
-            return soc_min_env + self.eps, soc_max_env - self.eps
-
-        if has_old:
+        if has_soc_min_max:
             soc_min_env = float(self.env.soc_min)
             soc_max_env = float(self.env.soc_max)
             return soc_min_env + self.eps, soc_max_env - self.eps
 
+        if hasattr(self.env, "soc_hard_min") and hasattr(self.env, "soc_hard_max"):
+            soc_min_env = float(self.env.soc_hard_min)
+            soc_max_env = float(self.env.soc_hard_max)
+            return soc_min_env + self.eps, soc_max_env - self.eps
+
+        if hasattr(self.env, "soc_soft_min") and hasattr(self.env, "soc_soft_max"):
+            soc_min_env = float(self.env.soc_soft_min)
+            soc_max_env = float(self.env.soc_soft_max)
+            return soc_min_env + self.eps, soc_max_env - self.eps
+
         raise AttributeError(
-            "Env has no SoC bound attributes (expected soc_hard_min/max, soc_soft_min/max, or soc_min/max)."
+            "Env has no SoC bound attributes (expected soc_min/max)."
         )
 
     # ------------------------------------------------------------------ #
