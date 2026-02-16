@@ -77,11 +77,10 @@ class RuleBasedController:
 
         # Convert price series to array
         if price_history is None:
-            print(
-                "[WARNING] RuleBasedController: No price_history provided. "
-                "Using current environment prices. This may give unfair evaluation results."
+            raise ValueError(
+                "RuleBasedController requires price_history for training. "
+                "Pass an array-like historical price series to compute percentile thresholds."
             )
-            prices = np.asarray(env.price_series, dtype=float)
         else:
             prices = np.asarray(price_history, dtype=float)
 
