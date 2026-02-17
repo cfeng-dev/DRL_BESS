@@ -28,7 +28,6 @@ class RuleBasedController:
         soc_max: float = 1.0,
         q_low: float = 20.0,
         q_high: float = 80.0,
-        deadband: float = 0.0,
         eps: float = 0.00,
     ):
         """
@@ -39,7 +38,6 @@ class RuleBasedController:
 
         price_history : array-like | None
             Historical price series used to compute robust percentiles.
-            If None, env.price_series is used (may be unfair).
 
         use_observed_price : bool
             If True -> use normalized price from observation (obs[6]) and scale back to EUR/MWh.
@@ -56,9 +54,6 @@ class RuleBasedController:
         q_high : float
             Upper percentile (e.g. 80th) for defining "expensive" prices.
 
-        deadband : float
-            If |factor| < deadband, the controller outputs zero power.
-
         eps : float
             Safety margin for SoC bounds. The controller will internally use
             [soc_min + eps, soc_max - eps] to stay away from limits.
@@ -68,7 +63,6 @@ class RuleBasedController:
 
         self.soc_min = float(soc_min)
         self.soc_max = float(soc_max)
-        self.deadband = float(deadband)
         self.eps = float(eps)
 
         # Internal "safe" band used by the controller (override logic)
@@ -192,10 +186,6 @@ class RuleBasedController:
         if soc >= self.soc_max_safe and factor > 0.0:
             factor = 0.0
         if soc <= self.soc_min_safe and factor < 0.0:
-            factor = 0.0
-
-        # 3) Deadband
-        if abs(factor) < self.deadband:
             factor = 0.0
 
         # 4) Clip factor
