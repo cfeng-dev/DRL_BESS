@@ -107,9 +107,8 @@ def plot_bess_rollout(
     # -----------------------------
     # Determine number of subplots
     # -----------------------------
-    n_rows = 1  # SoC is mandatory
-    if price_list is not None:
-        n_rows += 1
+    n_rows = 1
+
     if demand_list is not None:
         n_rows += 1
 
@@ -124,19 +123,20 @@ def plot_bess_rollout(
     if reward_list is not None:
         n_rows += 1
 
-    fig, axs = plt.subplots(n_rows, 1, figsize=figsize, sharex=False)
+    fig, axs = plt.subplots(n_rows, 1, figsize=figsize, sharex=True)
     if n_rows == 1:
         axs = [axs]
 
     row = 0
 
     # ----------------------------------------------------------------------
-    # SoC plot (mandatory)
+    # SoC plot (Arbitrage visualization)
     # ----------------------------------------------------------------------
-    axs[row].axhline(1.0, color="red", linestyle="--", linewidth=1.5, label="SoC bounds")
-    axs[row].axhline(0.0, color="red", linestyle="--", linewidth=1.5)
+    ax_soc = axs[row]
+    ax_soc.axhline(1.0, color="red", linestyle="--", linewidth=1.5, label="SoC bounds")
+    ax_soc.axhline(0.0, color="red", linestyle="--", linewidth=1.5)
 
-    axs[row].plot(x, soc_list, label="SoC", color="blue")
+    line_soc, = ax_soc.plot(x, soc_list, label="SoC", color="blue")
 
     # --- Violation markers (optional) ---
     if violated_list is not None:
@@ -144,7 +144,7 @@ def plot_bess_rollout(
         violated_indices = [i for i in range(m) if violated_list[i]]
         violated_soc = [soc_list[i] for i in violated_indices]
 
-        axs[row].scatter(
+        ax_soc.scatter(
             [x[i] for i in violated_indices],
             violated_soc,
             color="red",
@@ -153,25 +153,29 @@ def plot_bess_rollout(
             label="Violation",
         )
 
-    axs[row].set_ylabel("SoC", fontsize=fontsize_base)
-    axs[row].set_title("State of Charge", fontsize=fontsize_base + 2, fontweight="bold")
-    axs[row].grid(True)
-    axs[row].set_yticks([0.0, 0.5, 1.0])
-    axs[row].tick_params(axis="both", labelsize=fontsize_base)
-    axs[row].legend(loc="upper right", fontsize=fontsize_base)
-    row += 1
+    ax_soc.set_ylabel("SoC", fontsize=fontsize_base)
+    ax_soc.set_title("State of Charge", fontsize=fontsize_base + 2, fontweight="bold")
+    ax_soc.grid(True)
+    ax_soc.set_yticks([0.0, 0.5, 1.0])
+    ax_soc.tick_params(axis="both", labelsize=fontsize_base)
 
     # ----------------------------------------------------------------------
     # Price plot (optional)
     # ----------------------------------------------------------------------
+    ax_price = None
     if price_list is not None:
-        axs[row].plot(x, price_list[:n], label="Price", color="purple")
-        axs[row].set_ylabel("Price [EUR/MWh]", fontsize=fontsize_base)
-        axs[row].set_title("Electricity Price", fontsize=fontsize_base + 2, fontweight="bold")
-        axs[row].grid(True)
-        axs[row].tick_params(axis="both", labelsize=fontsize_base)
-        axs[row].legend(loc="upper right", fontsize=fontsize_base)
-        row += 1
+        ax_price = ax_soc.twinx()
+        line_price, = ax_price.plot(x, price_list[:n], label="Price", color="purple")
+        ax_price.set_ylabel("Price [EUR/MWh]", fontsize=fontsize_base)
+        ax_price.tick_params(axis="both", labelsize=fontsize_base)
+
+        lines = [line_soc, line_price]
+        labels = [l.get_label() for l in lines]
+        ax_soc.legend(lines, labels, loc="upper right", fontsize=fontsize_base)
+    else:
+        ax_soc.legend(loc="upper right", fontsize=fontsize_base)
+
+    row += 1
 
     # ----------------------------------------------------------------------
     # Demand plot (optional)
@@ -203,8 +207,6 @@ def plot_bess_rollout(
             labels=["Grid → Load", "BESS → Load"],
             alpha=0.75,
         )
-
-
 
         axs[row].set_ylim(0.0, y_max_scaled)
         axs[row].set_ylabel(f"Demand [{unit}]", fontsize=fontsize_base)
@@ -267,6 +269,10 @@ def plot_bess_rollout(
     # Add x-label to ALL subplots
     for ax in axs:
         ax.set_xlabel(xlabel, fontsize=fontsize_base)
+        ax.tick_params(axis="x", labelbottom=True)
+
+    if ax_price is not None:
+        ax_price.tick_params(axis="x", labelbottom=True)
 
     plt.tight_layout()
     plt.show()
