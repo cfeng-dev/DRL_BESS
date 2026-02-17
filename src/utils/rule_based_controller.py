@@ -188,17 +188,14 @@ class RuleBasedController:
         if soc <= self.soc_min_safe and factor < 0.0:
             factor = 0.0
 
-        # 4) Clip factor
-        factor = float(np.clip(factor, -1.0, 1.0))
-
-        # 5) Convert factor into kW command
+        # 3) Convert factor into kW command
         p_cmd = factor * float(self.env.p_max)
 
-        # 6) Lookahead: avoid actions that would cause SoC violations
+        # 4) Lookahead: avoid actions that would cause SoC violations
         if self._would_violate_soc(soc, p_cmd):
             p_cmd = 0.0
 
-        # 7) Map to discrete or continuous action space
+        # 5) Map to discrete or continuous action space
         if bool(self.env.use_discrete):
             disc_values = np.asarray(self.env.discrete_action_values, dtype=float)
             idx = int(np.argmin(np.abs(disc_values - p_cmd)))
