@@ -109,13 +109,10 @@ def plot_bess_rollout(
     # -----------------------------
     n_rows = 1
 
-    if demand_list is not None:
+    # Combined Demand + Peak Shaving plot
+    if (demand_list is not None) or has_flows:
         n_rows += 1
-
-    # Peak-shaving flow plot
-    if has_flows:
-        n_rows += 1
-
+    
     if action_list is not None:
         n_rows += 1
     if soh_list is not None:
@@ -178,42 +175,48 @@ def plot_bess_rollout(
     row += 1
 
     # ----------------------------------------------------------------------
-    # Demand plot (optional)
+    # Combined Demand + Peak Shaving Plot
     # ----------------------------------------------------------------------
-    if demand_list is not None:
-        demand_scaled = demand_MWh * scale
-        axs[row].plot(x, demand_scaled, label="Demand", color="teal")
-
-        axs[row].set_ylabel(f"Demand [{unit}]", fontsize=fontsize_base)
-        axs[row].set_title("Electricity Demand", fontsize=fontsize_base + 2, fontweight="bold")
-        axs[row].set_ylim(0.0, y_max_scaled)  # <<< match Peak Shaving plot
-        axs[row].grid(True)
-        axs[row].tick_params(axis="both", labelsize=fontsize_base)
-        axs[row].legend(loc="upper right", fontsize=fontsize_base)
-        row += 1
-
-    # ----------------------------------------------------------------------
-    # Grid vs BESS supply to office (Peak Shaving visualization)
-    # ----------------------------------------------------------------------
-    if has_flows:
-        e_grid = e_grid_MWh * scale
-        e_bess = e_bess_MWh * scale
-        total_supply = e_grid + e_bess
-
-        axs[row].stackplot(
-            x,
-            e_grid,
-            e_bess,
-            labels=["Grid → Load", "BESS → Load"],
-            alpha=0.75,
+    if has_demand or has_flows:
+    
+        ax_combined = axs[row]
+    
+        # --- Plot stackplot first (Grid + BESS supply) ---
+        if has_flows:
+            e_grid = e_grid_MWh * scale
+            e_bess = e_bess_MWh * scale
+    
+            ax_combined.stackplot(
+                x,
+                e_grid,
+                e_bess,
+                labels=["Grid → Load", "BESS → Load"],
+                alpha=0.6,
+            )
+    
+        # --- Plot total demand as line on top ---
+        if has_demand:
+            demand_scaled = demand_MWh * scale
+            ax_combined.plot(
+                x,
+                demand_scaled,
+                color="black",
+                linewidth=2,
+                label="Demand",
+            )
+    
+        ax_combined.set_ylim(0.0, y_max_scaled)
+        ax_combined.set_ylabel(f"Demand [{unit}]", fontsize=fontsize_base)
+        ax_combined.set_title(
+            "Demand and Load Supply (Peak Shaving Effect)",
+            fontsize=fontsize_base + 2,
+            fontweight="bold",
         )
-
-        axs[row].set_ylim(0.0, y_max_scaled)
-        axs[row].set_ylabel(f"Demand [{unit}]", fontsize=fontsize_base)
-        axs[row].set_title("Load Supply (Peak Shaving Effect)", fontsize=fontsize_base + 2, fontweight="bold")
-        axs[row].grid(True)
-        axs[row].tick_params(axis="both", labelsize=fontsize_base)
-        axs[row].legend(loc="upper right", fontsize=fontsize_base)
+    
+        ax_combined.grid(True)
+        ax_combined.tick_params(axis="both", labelsize=fontsize_base)
+        ax_combined.legend(loc="upper right", fontsize=fontsize_base)
+    
         row += 1
 
     # ----------------------------------------------------------------------
