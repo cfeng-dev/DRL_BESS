@@ -1,4 +1,4 @@
-# Uncertainty-Aware Reinforcement Learning for Battery Energy Storage Control
+# Reinforcement Learning for Controlling a BESS under Uncertainty
 
 ## Overview
 
@@ -8,44 +8,76 @@ grid-connected **Battery Energy Storage System (BESS)** under electricity price 
 
 ## Problem Description
 
-With the increasing integration of renewable energy sources, modern power systems experience high fluctuations in
-electricity prices and demand.  
-BESS play a crucial role in stabilizing such systems by storing excess energy and
-releasing it when needed.  
-However, traditional rule-based or deterministic optimization strategies fail to account for uncertainty in price
-forecasts and load predictions, leading to suboptimal charging and discharging decisions, increased battery degradation,
-and reduced economic efficiency.
+Highly volatile electricity prices and uncertain market developments limit the efficiency of rule-based control approaches for BESS operation in the context of energy arbitrage and peak shaving. In particular, uncertainty in future load and demand patterns makes reliable planning of charging and discharging strategies for peak shaving challenging.
 
 ## Objectives
 
-The objective of this project is to develop a DRL controller that:
-- optimally operates a BESS under uncertain market and demand conditions,  
-- learns continuous charge and discharge actions,  
-- maximizes economic profit while minimizing battery degradation,  
-- and explicitly models and incorporates forecast uncertainty in decision-making.  
+The primary objective of this Master’s project is to develop a reinforcement learning (RL) environment in Python for the control of a grid-connected BESS.
 
-The resulting framework aims to provide a robust and practical control strategy suitable for real-world applications.
+The project aims to evaluate multiple RL-based controllers to optimize BESS operation under uncertain electricity prices and fluctuating demand profiles. In particular, the behavior of different RL agents is analyzed in two operational scenarios:
 
-## Methodology
+- Energy arbitrage  
+- Peak shaving  
 
-1. **Simulation Environment**  
-   Development of a realistic environment modeling a grid-connected BESS with state variables such as  
-   State of Charge (SOC), State of Health (SoH), last action, forecasted prices and demand (including uncertainty),
-   time of day, and day of year.
+## Project Components
 
-2. **Battery Model**  
-   Implementation of a degradation model (e.g. Rainflow cycle counting) to quantify the effect of charge/discharge
-   cycles on the SoH and convert degradation into monetary cost.
+### 1. Simulation Environment
 
-3. **RL Agents**  
-   - **Baseline:** Soft Actor-Critic (SAC) for continuous action control.  
-   - **Extended methods:** Uncertainty-aware approaches such as Distributional RL (QR-DQN / C51) or CVaR-optimized SAC.  
-   - **Comparative models:** Rule-based control for benchmarking.
+Development of a custom Gymnasium-based environment modeling a grid-connected BESS.
 
-4. **Training and Evaluation**  
-   - Simulations over multiple episodes (e.g. one week per episode with hourly or 15-min resolution).  
-   - Performance metrics include total profit, equivalent full cycles, SoH loss, constraint violations,
-     and robustness under market volatility.
+The environment includes:
+
+- State of Charge (SoC)
+- State of Health (SoH)
+- Current electricity price
+- Current electricity demand (for peak shaving scenario)
+- Time encoding (sin/cos of time-of-day and day-of-year)
+- Optional price and demand forecasts
+- Last executed action
+
+### 2. Battery Model
+
+The battery model includes:
+
+- Power limits  
+- SoC constraints  
+- Charging and discharging efficiency  
+- Equivalent Full Cycles (EFC) for degradation approximation
+
+### 3. RL Agents
+
+The following RL algorithms are compared:
+
+- **DQN** (Discrete action space)
+- **TD3** (Continuous action space)
+- **QR-DQN** (Distributional RL)
+
+Additionally:
+
+- **Rule-Based Controller** as baseline benchmark
+
+The agents are evaluated in both arbitrage and peak shaving scenarios.
+
+### 4. Training and Evaluation
+
+**Training Setup**
+
+- Episode length: one week
+- Time resolution: 15-minute intervals
+- Historical electricity price and load data
+- Separate train/test split  
+  (November 2024 for training, first week of 2025 for testing)
+
+**Data Sources**
+
+- Electricity prices: [Fraunhofer ISE EnergyCharts](https://energy-charts.info)
+- Load profiles: [SMARD Data Portal](https://www.smard.de/home)
+
+**Evaluation Metrics**
+
+- Total profit (arbitrage scenario)
+- Peak reduction (peak shaving scenario)
+- Final SoH
 
 ## Tools
 
